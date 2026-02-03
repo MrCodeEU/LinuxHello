@@ -250,6 +250,7 @@ func deleteUserEnrollment(cfg *config.Config, username string, logger *logrus.Lo
 }
 
 func isValidUsername(username string) bool {
+	// Check if username is empty
 	if username == "" {
 		return false
 	}
@@ -260,7 +261,7 @@ func isValidUsername(username string) bool {
 		isUpper := c >= 'A' && c <= 'Z'
 		isDigit := c >= '0' && c <= '9'
 		isSpecial := c == '_' || c == '-' || c == '.'
-		
+
 		if !isLower && !isUpper && !isDigit && !isSpecial {
 			return false
 		}
