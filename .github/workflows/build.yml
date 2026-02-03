@@ -2,234 +2,259 @@ name: Build and Test
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
+env:
+  ONNXRUNTIME_VERSION: "1.23.2"
+  GO_VERSION_STABLE: "1.25"
+  GO_VERSION_PREVIOUS: "1.24"
+
 jobs:
+  # Lint job runs first to fail fast on code quality issues
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION_STABLE }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libv4l-dev \
+            libpam0g-dev \
+            libsqlite3-dev \
+            pkg-config
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "Go code is not formatted:"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+  # Main build and test job
   build:
+    name: Build (${{ matrix.go-version }})
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        go-version: ['1.24', '1.25']
-        os: [ubuntu-latest]
+        go-version: ["1.24", "1.25"]
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: ${{ matrix.go-version }}
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
 
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libv4l-dev \
+            libpam0g-dev \
+            libsqlite3-dev \
+            pkg-config
 
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libv4l-dev \
-          libpam0g-dev \
-          libsqlite3-dev \
-          pkg-config
+      - name: Download ONNX Runtime
+        run: |
+          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
+          sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
+          sudo ldconfig
 
-    - name: Download ONNX Runtime
-      run: |
-        # Download ONNX Runtime for CI
-        wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
-        tar -xzf onnxruntime-linux-x64-1.16.3.tgz
-        sudo cp -r onnxruntime-linux-x64-1.16.3/include/* /usr/local/include/
-        sudo cp -r onnxruntime-linux-x64-1.16.3/lib/* /usr/local/lib/
-        sudo ldconfig
+      - name: Download dependencies
+        run: go mod download
 
-    - name: Download dependencies
-      run: go mod download
+      - name: Build binaries
+        run: |
+          go build -v ./cmd/facelock
+          go build -v ./cmd/facelock-enroll
+          go build -v ./cmd/facelock-test
 
-    - name: Build binaries
-      run: |
-        go build -v ./cmd/facelock
-        go build -v ./cmd/facelock-enroll
-        go build -v ./cmd/facelock-test
+      - name: Build PAM module
+        run: |
+          CGO_CFLAGS="-I/usr/include" \
+          CGO_LDFLAGS="-lpam -lpam_misc" \
+          go build -buildmode=c-shared -v ./pkg/pam
 
-    - name: Build PAM module
-      run: |
-        CGO_CFLAGS="-I/usr/include" \
-        CGO_LDFLAGS="-lpam -lpam_misc" \
-        go build -buildmode=c-shared -v ./pkg/pam
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out ./...
 
-    - name: Run tests
-      run: go test -v ./...
+      - name: Upload coverage
+        if: matrix.go-version == env.GO_VERSION_STABLE
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
 
-    - name: Run vet
-      run: go vet ./...
-
-    - name: Check formatting
-      run: |
-        if [ -n "$(gofmt -l .)" ]; then
-          echo "Go code is not formatted:"
-          gofmt -l .
-          exit 1
-        fi
-
+  # Fedora build for RPM-based distros
   build-fedora:
+    name: Build (Fedora)
+    needs: lint
     runs-on: ubuntu-latest
     container:
       image: fedora:latest
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-    - name: Install dependencies
-      run: |
-        dnf install -y \
-          golang \
-          gcc \
-          gcc-c++ \
-          make \
-          libv4l-devel \
-          pam-devel \
-          sqlite-devel \
-          pkg-config \
-          wget \
-          tar
+      - name: Install dependencies
+        run: |
+          dnf install -y \
+            golang \
+            gcc \
+            gcc-c++ \
+            make \
+            libv4l-devel \
+            pam-devel \
+            sqlite-devel \
+            pkg-config \
+            wget \
+            tar
 
-    - name: Download ONNX Runtime
-      run: |
-        wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
-        tar -xzf onnxruntime-linux-x64-1.16.3.tgz
-        cp -r onnxruntime-linux-x64-1.16.3/include/* /usr/local/include/
-        cp -r onnxruntime-linux-x64-1.16.3/lib/* /usr/local/lib/
-        ldconfig
+      - name: Download ONNX Runtime
+        run: |
+          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
+          ldconfig
 
-    - name: Build
-      run: |
-        go build -v ./cmd/facelock
-        go build -v ./cmd/facelock-enroll
-        go build -v ./cmd/facelock-test
+      - name: Build
+        run: |
+          go build -v ./cmd/facelock
+          go build -v ./cmd/facelock-enroll
+          go build -v ./cmd/facelock-test
 
+  # Arch Linux build
   build-arch:
+    name: Build (Arch Linux)
+    needs: lint
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-    - name: Install dependencies
-      run: |
-        pacman -Syu --noconfirm
-        pacman -S --noconfirm \
-          go \
-          gcc \
-          make \
-          v4l-utils \
-          pam \
-          sqlite \
-          pkg-config \
-          wget \
-          tar
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            go \
+            gcc \
+            make \
+            v4l-utils \
+            pam \
+            sqlite \
+            pkg-config \
+            wget \
+            tar
 
-    - name: Download ONNX Runtime
-      run: |
-        wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
-        tar -xzf onnxruntime-linux-x64-1.16.3.tgz
-        cp -r onnxruntime-linux-x64-1.16.3/include/* /usr/local/include/
-        cp -r onnxruntime-linux-x64-1.16.3/lib/* /usr/local/lib/
+      - name: Download ONNX Runtime
+        run: |
+          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
 
-    - name: Build
-      run: |
-        go build -v ./cmd/facelock
-        go build -v ./cmd/facelock-enroll
-        go build -v ./cmd/facelock-test
+      - name: Build
+        run: |
+          go build -v ./cmd/facelock
+          go build -v ./cmd/facelock-enroll
+          go build -v ./cmd/facelock-test
 
-  lint:
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libv4l-dev \
-          libpam0g-dev \
-          libsqlite3-dev \
-          pkg-config
-
-    - name: golangci-lint
-      uses: golangci/golangci-lint-action@v4
-      with:
-        version: latest
-        args: --timeout=5m
-
+  # Release job
   release:
+    name: Release
     needs: [build, build-fedora, build-arch]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION_STABLE }}
+          cache: true
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libv4l-dev \
-          libpam0g-dev \
-          libsqlite3-dev \
-          rpm \
-          dpkg-dev
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libv4l-dev \
+            libpam0g-dev \
+            libsqlite3-dev \
+            rpm \
+            dpkg-dev
 
-    - name: Download ONNX Runtime
-      run: |
-        wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.16.3/onnxruntime-linux-x64-1.16.3.tgz
-        tar -xzf onnxruntime-linux-x64-1.16.3.tgz
-        sudo cp -r onnxruntime-linux-x64-1.16.3/include/* /usr/local/include/
-        sudo cp -r onnxruntime-linux-x64-1.16.3/lib/* /usr/local/lib/
-        sudo ldconfig
+      - name: Download ONNX Runtime
+        run: |
+          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
+          sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
+          sudo ldconfig
 
-    - name: Build release binaries
-      run: |
-        # Linux AMD64
-        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-linux-amd64 ./cmd/facelock
-        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-enroll-linux-amd64 ./cmd/facelock-enroll
-        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-test-linux-amd64 ./cmd/facelock-test
-        
-        # PAM module (requires CGO, only build for host arch)
-        CGO_CFLAGS="-I/usr/include" \
-        CGO_LDFLAGS="-lpam -lpam_misc" \
-        go build -buildmode=c-shared -ldflags="-s -w" -o dist/pam_facelock.so ./pkg/pam
+      - name: Build release binaries
+        run: |
+          mkdir -p dist
+          
+          # Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-linux-amd64 ./cmd/facelock
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-enroll-linux-amd64 ./cmd/facelock-enroll
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-test-linux-amd64 ./cmd/facelock-test
+          
+          # PAM module (requires CGO, only build for host arch)
+          CGO_CFLAGS="-I/usr/include" \
+          CGO_LDFLAGS="-lpam -lpam_misc" \
+          go build -buildmode=c-shared -ldflags="-s -w" -o dist/pam_facelock.so ./pkg/pam
 
-    - name: Create release packages
-      run: |
-        mkdir -p dist/packages
-        
-        # Create tarball
-        tar -czf dist/packages/facelock-${GITHUB_REF_NAME}-linux-amd64.tar.gz \
-          -C dist facelock-linux-amd64 facelock-enroll-linux-amd64 facelock-test-linux-amd64 pam_facelock.so \
-          -C ../ configs scripts README.md
+      - name: Create release packages
+        run: |
+          mkdir -p dist/packages
+          
+          # Create tarball
+          tar -czf "dist/packages/facelock-${GITHUB_REF_NAME}-linux-amd64.tar.gz" \
+            -C dist facelock-linux-amd64 facelock-enroll-linux-amd64 facelock-test-linux-amd64 pam_facelock.so \
+            -C ../ configs scripts README.md
 
-    - name: Upload release assets
-      uses: softprops/action-gh-release@v1
-      with:
-        files: dist/packages/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/packages/*
+          generate_release_notes: true
