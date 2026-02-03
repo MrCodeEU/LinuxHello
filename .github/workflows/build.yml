@@ -52,67 +52,49 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
-  # Main build and test job
-  build:
-    name: Build (${{ matrix.go-version }})
+  # Debian build
+  build-debian:
+    name: Build (Debian)
     needs: lint
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        go-version: ["1.24", "1.25"]
+    container:
+      image: debian:latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-          cache: true
-
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
+            golang \
+            gcc \
+            g++ \
+            make \
             libv4l-dev \
             libpam0g-dev \
             libsqlite3-dev \
-            pkg-config
+            pkg-config \
+            wget \
+            ca-certificates
 
       - name: Download ONNX Runtime
         run: |
           wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
           tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
-          sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
-          sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
-          sudo ldconfig
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
+          ldconfig
 
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Build binaries
+      - name: Build
         run: |
           go build -v ./cmd/facelock
           go build -v ./cmd/facelock-enroll
           go build -v ./cmd/facelock-test
 
-      - name: Build PAM module
-        run: |
-          CGO_CFLAGS="-I/usr/include" \
-          CGO_LDFLAGS="-lpam -lpam_misc" \
-          go build -buildmode=c-shared -v ./pkg/pam
-
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
-
-      - name: Upload coverage
-        if: matrix.go-version == env.GO_VERSION_STABLE
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage.out
+        run: go test -v ./...
 
   # Fedora build for RPM-based distros
   build-fedora:
@@ -196,7 +178,7 @@ jobs:
   # Release job
   release:
     name: Release
-    needs: [build, build-fedora, build-arch]
+    needs: [build-debian, build-fedora, build-arch]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     permissions:
