@@ -9,14 +9,14 @@ import (
 func TestStore(t *testing.T) {
 	// Create temporary database
 	dbPath := "/tmp/test_facelock.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	// Create store
 	store, err := NewStore(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Test user creation
 	t.Run("CreateUser", func(t *testing.T) {

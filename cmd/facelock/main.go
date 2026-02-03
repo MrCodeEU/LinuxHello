@@ -113,7 +113,11 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) e
 	if err != nil {
 		return fmt.Errorf("failed to create auth engine: %w", err)
 	}
-	defer engine.Close()
+	defer func() {
+		if err := engine.Close(); err != nil {
+			logger.Errorf("Failed to close engine: %v", err)
+		}
+	}()
 
 	// Create Unix socket for IPC
 	socketPath := "/var/run/facelock/facelock.sock"
@@ -123,14 +127,18 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) e
 	}
 
 	// Remove existing socket if it exists
-	os.Remove(socketPath)
+	_ = os.Remove(socketPath)
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return fmt.Errorf("failed to create Unix socket: %w", err)
 	}
-	defer listener.Close()
-	defer os.Remove(socketPath)
+	defer func() {
+		if err := listener.Close(); err != nil {
+			logger.Errorf("Failed to close listener: %v", err)
+		}
+	}()
+	defer func() { _ = os.Remove(socketPath) }()
 
 	// Set socket permissions
 	if err := os.Chmod(socketPath, 0660); err != nil {
@@ -166,7 +174,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) e
 }
 
 func handleConnection(conn net.Conn, engine *auth.Engine, logger *logrus.Logger) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Simple protocol: read username, perform auth, write result
 	buf := make([]byte, 256)
@@ -185,14 +193,14 @@ func handleConnection(conn net.Conn, engine *auth.Engine, logger *logrus.Logger)
 
 	result, err := engine.AuthenticateUser(authCtx, username)
 	if err != nil {
-		conn.Write([]byte("ERROR: " + err.Error()))
+		_, _ = conn.Write([]byte("ERROR: " + err.Error()))
 		return
 	}
 
 	if result.Success {
-		conn.Write([]byte("SUCCESS"))
+		_, _ = conn.Write([]byte("SUCCESS"))
 	} else {
-		conn.Write([]byte("FAILED"))
+		_, _ = conn.Write([]byte("FAILED"))
 	}
 }
 

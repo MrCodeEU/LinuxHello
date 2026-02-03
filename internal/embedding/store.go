@@ -53,7 +53,7 @@ func NewStore(dbPath string) (*Store, error) {
 
 	// Initialize schema
 	if err := store.initSchema(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -263,7 +263,7 @@ func (s *Store) ListUsers() ([]User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list users: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var users []User
 	for rows.Next() {
@@ -333,7 +333,7 @@ func (s *Store) GetAuthHistory(username string, limit int) ([]AuthLog, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth history: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var logs []AuthLog
 	for rows.Next() {

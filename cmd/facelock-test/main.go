@@ -63,7 +63,11 @@ func runSingleAuth(cfg *config.Config, username string, logger *logrus.Logger) e
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
-	defer engine.Close()
+	defer func() {
+		if err := engine.Close(); err != nil {
+			logger.Errorf("Failed to close engine: %v", err)
+		}
+	}()
 
 	// Initialize camera
 	fmt.Println("Initializing camera...")
@@ -88,7 +92,7 @@ func runSingleAuth(cfg *config.Config, username string, logger *logrus.Logger) e
 
 	// Wait for user to be ready
 	fmt.Print("Press Enter to start authentication...")
-	fmt.Scanln()
+	_, _ = fmt.Scanln()
 	fmt.Println()
 
 	// Perform authentication
@@ -145,7 +149,7 @@ func runContinuousMode(cfg *config.Config, username string, showFPS bool, logger
 	if err != nil {
 		return err
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 
 	fmt.Println("Camera ready. Starting continuous authentication...")
 
@@ -194,13 +198,13 @@ func setupAuthenticationEngine(cfg *config.Config, logger *logrus.Logger) (*auth
 	// Initialize camera
 	fmt.Println("Initializing camera...")
 	if err := engine.InitializeCamera(); err != nil {
-		engine.Close()
+		_ = engine.Close()
 		return nil, fmt.Errorf("failed to initialize camera: %w", err)
 	}
 
 	// Start capture
 	if err := engine.Start(); err != nil {
-		engine.Close()
+		_ = engine.Close()
 		return nil, fmt.Errorf("failed to start camera: %w", err)
 	}
 	return engine, nil

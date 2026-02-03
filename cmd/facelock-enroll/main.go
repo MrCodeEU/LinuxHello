@@ -93,7 +93,7 @@ func enrollUser(cfg *config.Config, username string, numSamples int, debug bool,
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 
 	// Initialize camera
 	fmt.Println("Initializing camera...")
@@ -117,7 +117,7 @@ func enrollUser(cfg *config.Config, username string, numSamples int, debug bool,
 		fmt.Print("Do you want to update enrollment? [y/N]: ")
 
 		var response string
-		fmt.Scanln(&response)
+		_, _ = fmt.Scanln(&response)
 
 		if strings.ToLower(response) != "y" && strings.ToLower(response) != "yes" {
 			fmt.Println("Enrollment cancelled.")
@@ -143,7 +143,7 @@ func enrollUser(cfg *config.Config, username string, numSamples int, debug bool,
 
 	// Wait for user to be ready
 	fmt.Print("Press Enter when ready to start enrollment...")
-	fmt.Scanln()
+	_, _ = fmt.Scanln()
 	fmt.Println()
 
 	var debugDir string
@@ -177,7 +177,7 @@ func listEnrolledUsers(cfg *config.Config, logger *logrus.Logger) error {
 	if err != nil {
 		return fmt.Errorf("failed to open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	users, err := store.ListUsers()
 	if err != nil {
@@ -220,7 +220,7 @@ func deleteUserEnrollment(cfg *config.Config, username string, logger *logrus.Lo
 	if err != nil {
 		return fmt.Errorf("failed to open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Check if user exists
 	_, err = store.GetUser(username)
@@ -232,7 +232,7 @@ func deleteUserEnrollment(cfg *config.Config, username string, logger *logrus.Lo
 	fmt.Printf("Are you sure you want to delete enrollment for user '%s'? [y/N]: ", username)
 
 	var response string
-	fmt.Scanln(&response)
+	_, _ = fmt.Scanln(&response)
 
 	if strings.ToLower(response) != "y" && strings.ToLower(response) != "yes" {
 		fmt.Println("Deletion cancelled.")
@@ -256,8 +256,12 @@ func isValidUsername(username string) bool {
 
 	// Check for valid characters
 	for _, c := range username {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+		isLower := c >= 'a' && c <= 'z'
+		isUpper := c >= 'A' && c <= 'Z'
+		isDigit := c >= '0' && c <= '9'
+		isSpecial := c == '_' || c == '-' || c == '.'
+		
+		if !isLower && !isUpper && !isDigit && !isSpecial {
 			return false
 		}
 	}

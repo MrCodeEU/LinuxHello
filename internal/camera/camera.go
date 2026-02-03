@@ -197,7 +197,7 @@ func (c *Camera) captureLoop() {
 			copy(dataCopy, buf)
 
 			// Determine pixel format based on config
-			pixelFormat := v4l2.PixelFmtMJPEG // Default
+			var pixelFormat v4l2.FourCCType
 			switch c.config.PixelFormat {
 			case "GREY":
 				pixelFormat = v4l2.PixelFmtGrey
@@ -361,18 +361,5 @@ func rgb24ToImage(data []byte, width, height int) (image.Image, error) {
 func greyToImage(data []byte, width, height int) (image.Image, error) {
 	img := image.NewGray(image.Rect(0, 0, width, height))
 	copy(img.Pix, data)
-	return img, nil
-}
-
-func y16ToImage(data []byte, width, height int) (image.Image, error) {
-	// Y16 is 16-bit, convert to 8-bit grayscale
-	img := image.NewGray(image.Rect(0, 0, width, height))
-
-	for i := 0; i < width*height && i*2+1 < len(data); i++ {
-		// Take high byte (or average both)
-		val := data[i*2+1] // High byte
-		img.Pix[i] = val
-	}
-
 	return img, nil
 }

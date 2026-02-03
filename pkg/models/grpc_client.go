@@ -24,29 +24,32 @@ type InferenceClient struct {
 
 // NewInferenceClient creates a new inference client
 func NewInferenceClient(address string) (*InferenceClient, error) {
-	// Set up connection with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Set up connection
+	// ctx is no longer needed for NewClient
+	// cancel is not needed either, but we might want to keep the timeout logic for the health check?
+	// The original code used ctx for DialContext.
 
-	conn, err := grpc.DialContext(ctx, address,
+	conn, err := grpc.NewClient(address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to inference service at %s: %w", address, err)
+		return nil, fmt.Errorf("failed to create client for inference service at %s: %w", address, err)
 	}
 
 	client := inference.NewFaceInferenceClient(conn)
 
-	// Check health
-	healthResp, err := client.Health(context.Background(), &inference.HealthRequest{})
+	// Check health with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	healthResp, err := client.Health(ctx, &inference.HealthRequest{})
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("health check failed: %w", err)
 	}
 
 	if !healthResp.Healthy {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("inference service is not healthy")
 	}
 
@@ -352,25 +355,6 @@ func (dld *DepthLivenessDetector) Close() error {
 }
 
 // Utility functions
-
-func normalizeEmbedding(embedding []float32) []float32 {
-	var norm float64
-	for _, v := range embedding {
-		norm += float64(v) * float64(v)
-	}
-	norm = math.Sqrt(norm)
-
-	if norm == 0 {
-		return embedding
-	}
-
-	normalized := make([]float32, len(embedding))
-	for i, v := range embedding {
-		normalized[i] = float32(float64(v) / norm)
-	}
-
-	return normalized
-}
 
 // CosineSimilarity computes cosine similarity between two embeddings
 func CosineSimilarity(a, b []float32) float64 {

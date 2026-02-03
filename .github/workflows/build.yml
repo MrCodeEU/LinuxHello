@@ -159,6 +159,15 @@ jobs:
       with:
         go-version: '1.21'
 
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libv4l-dev \
+          libpam0g-dev \
+          libsqlite3-dev \
+          pkg-config
+
     - name: golangci-lint
       uses: golangci/golangci-lint-action@v4
       with:

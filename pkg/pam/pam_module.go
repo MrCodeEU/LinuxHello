@@ -102,7 +102,7 @@ func goAuthenticate(pamh *C.pam_handle_t, flags C.int, argc C.int, argv **C.char
 		}
 		return C.PAM_AUTH_ERR
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 
 	// Initialize camera
 	if err := engine.InitializeCamera(); err != nil {
@@ -228,7 +228,7 @@ func isUserEnrolled(cfg *config.Config, username string) bool {
 	if err != nil {
 		return false
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	_, err = store.GetUser(username)
 	return err == nil

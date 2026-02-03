@@ -172,7 +172,6 @@ func (cs *ChallengeSystem) detectBlink(
 
 			// Detect blink: eyes closed for a short period then open
 			if consecutiveClosed >= 3 && framesWithEyesOpen > 5 {
-				blinkDetected = true
 				return true
 			}
 
@@ -244,11 +243,6 @@ func (cs *ChallengeSystem) detectTurn(
 
 	initialX := (initialDetection.X1 + initialDetection.X2) / 2
 	initialWidth := initialDetection.X2 - initialDetection.X1
-
-	targetYaw := float32(20.0) // degrees
-	if direction == ChallengeTurnLeft {
-		targetYaw = -targetYaw
-	}
 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
