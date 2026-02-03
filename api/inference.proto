@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package facelock.inference;
+
+option go_package = "./api;inference";
+
+// Face detection and recognition inference service
+service FaceInference {
+  // Detect faces in an image and return bounding boxes with landmarks
+  rpc DetectFaces(DetectRequest) returns (DetectResponse);
+  
+  // Extract face embedding from aligned face image
+  rpc ExtractEmbedding(EmbeddingRequest) returns (EmbeddingResponse);
+  
+  // Check if face is real (liveness detection)
+  rpc CheckLiveness(LivenessRequest) returns (LivenessResponse);
+  
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// Image data in raw format
+message Image {
+  bytes data = 1;           // Raw image bytes (JPEG/PNG) or raw pixel data
+  int32 width = 2;          // Image width
+  int32 height = 3;         // Image height
+  int32 channels = 4;       // Number of channels (1=grayscale, 3=RGB)
+  string format = 5;        // Format: "jpeg", "png", "raw"
+}
+
+// Face detection bounding box with landmarks
+message Detection {
+  float x1 = 1;             // Top-left x coordinate
+  float y1 = 2;             // Top-left y coordinate
+  float x2 = 3;             // Bottom-right x coordinate
+  float y2 = 4;             // Bottom-right y coordinate
+  float confidence = 5;     // Detection confidence score
+  repeated Landmark landmarks = 6;  // 5-point facial landmarks
+}
+
+// Facial landmark point
+message Landmark {
+  float x = 1;
+  float y = 2;
+}
+
+// Face embedding vector
+message Embedding {
+  repeated float values = 1;  // 512-dimensional embedding vector
+}
+
+// Detection request
+message DetectRequest {
+  Image image = 1;
+  float confidence_threshold = 2;  // Minimum confidence (default: 0.5)
+  float nms_threshold = 3;         // NMS threshold (default: 0.4)
+}
+
+// Detection response
+message DetectResponse {
+  repeated Detection detections = 1;
+  int32 inference_time_ms = 2;  // Inference time in milliseconds
+}
+
+// Embedding extraction request
+message EmbeddingRequest {
+  Image image = 1;              // Full image
+  Detection face = 2;           // Face bounding box and landmarks
+}
+
+// Embedding extraction response
+message EmbeddingResponse {
+  Embedding embedding = 1;
+  int32 inference_time_ms = 2;
+}
+
+// Liveness detection request
+message LivenessRequest {
+  Image image = 1;
+  Detection face = 2;
+}
+
+// Liveness detection response
+message LivenessResponse {
+  bool is_live = 1;
+  float confidence = 2;
+  int32 inference_time_ms = 3;
+}
+
+// Health check request
+message HealthRequest {}
+
+// Health check response
+message HealthResponse {
+  bool healthy = 1;
+  string version = 2;
+  string device = 3;           // "cpu", "cuda", "rocm", "directml"
+  repeated string models_loaded = 4;
+}

@@ -1,0 +1,22 @@
+# Core dependencies
+numpy>=1.24.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# ONNX Runtime - choose ONE based on your hardware:
+# For ROCm (AMD GPU):
+# onnxruntime-rocm>=1.16.0
+
+# For CPU:
+onnxruntime>=1.16.0
+
+# For DirectML (Ryzen AI NPU on Windows):
+# onnxruntime-directml>=1.16.0
+
+# gRPC
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+protobuf>=4.25.0
+
+# Optional: InsightFace for easier model management
+# insightface>=0.7.3

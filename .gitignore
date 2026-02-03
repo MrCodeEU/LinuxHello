@@ -1,0 +1,64 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build output
+build/
+dist/
+
+# Go
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Python
+python-service/venv/
+python-service/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Debug output
+debug_enrollment/
+debug_*/
+
+# Logs
+logs/*.log
+*.log
+
+# Data (user enrollments - sensitive)
+data/dev/
+data/*.db
+*.db
+
+# Models (too large for git, download separately)
+models/*.onnx
+!models/README.md
+
+# Config (local overrides)
+configs/dev/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
