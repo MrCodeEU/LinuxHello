@@ -118,26 +118,92 @@ make test-auth
 
 ## PAM Integration
 
-### Enable for sudo
+> ⚠️ **WARNING**: Misconfiguring PAM can lock you out of your system!  
+> Always keep a root terminal open when testing PAM changes.
+
+### Automated PAM Management (Recommended)
+
+LinuxHello includes a safe PAM management tool with automatic backups:
 
 ```bash
-# Backup first!
-sudo cp /etc/pam.d/sudo /etc/pam.d/sudo.backup
+# Check current PAM status
+facelock-pam status
 
-# Add LinuxHello (Fedora)
-echo "auth sufficient pam_facelock.so" | sudo tee -a /etc/pam.d/sudo
+# Test face authentication before enabling
+facelock-pam test
+
+# Enable for sudo (safest first step)
+sudo facelock-pam enable sudo
+
+# Enable for GUI password dialogs (PolicyKit)
+sudo facelock-pam enable polkit
+
+# Enable for SDDM login (KDE)
+sudo facelock-pam enable sddm
+
+# Disable if something goes wrong
+sudo facelock-pam disable sudo
+sudo facelock-pam disable polkit
+
+# Restore original configs from backup
+sudo facelock-pam restore
+
+# List all available services
+facelock-pam list
 ```
 
-### Enable for SDDM (KDE Login)
+Convenience make targets:
 
 ```bash
-# Coming soon - see docs/pam-integration.md
+make pam-status        # Show PAM integration status
+make pam-enable-sudo   # Enable for sudo
+make pam-enable-polkit # Enable for GUI dialogs
+make pam-enable-sddm   # Enable for SDDM
+make pam-disable-all   # Disable everything
+make pam-restore       # Restore all backups
 ```
 
-### Enable for GDM (GNOME Login)
+### Supported Services
+
+| Service | Description | Risk Level |
+|---------|-------------|------------|
+| `sudo` | Terminal sudo commands | 🟢 Low (fallback to password) |
+| `su` | Switch user command | 🟢 Low (fallback to password) |
+| `polkit` | GUI password dialogs | 🟢 Low (fallback to password) |
+| `sddm` | KDE display manager | 🟡 Medium |
+| `gdm` | GNOME display manager | 🟡 Medium |
+| `lightdm` | LightDM display manager | 🟡 Medium |
+| `login` | TTY console login | 🟡 Medium |
+| `system-auth` | Fedora/RHEL global auth | 🔴 High (affects everything) |
+| `common-auth` | Debian/Ubuntu global auth | 🔴 High (affects everything) |
+| `kde` | KDE screen locker | 🟡 Medium |
+
+### Safety Features
+
+- **Automatic Backups**: All original configs saved to `/var/lib/facelock/pam-backups/`
+- **Password Fallback**: Face auth always falls back to password on failure
+- **Lockout Recovery**: Boot to single-user mode and run `facelock-pam restore`
+- **Timestamped Backups**: Multiple backup versions preserved
+- **Dry-Run Support**: Use `-n` flag to see changes without applying
+
+### Emergency Recovery
+
+If you get locked out:
+
+1. **Reboot** and enter GRUB menu
+2. **Edit boot entry**: Add `init=/bin/bash` to kernel line
+3. **Remount root**: `mount -o remount,rw /`
+4. **Restore PAM**: `/usr/local/bin/facelock-pam restore`
+5. **Reboot**: `reboot -f`
+
+Or from a live USB:
 
 ```bash
-# Coming soon - see docs/pam-integration.md
+# Mount your root partition
+sudo mount /dev/sdXn /mnt
+
+# Restore PAM backups
+sudo cp /mnt/var/lib/facelock/pam-backups/*.backup /mnt/etc/pam.d/
 ```
 
 ## Configuration

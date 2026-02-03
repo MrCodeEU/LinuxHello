@@ -100,7 +100,7 @@ func triggerIREmitter(devicePath string) error {
 	// Run the command: linux-enable-ir-emitter run
 	// Note: In typical usage, this command might need the device path, but checking the
 	// external tool usage, 'run' usually attempts to enable configured emitters.
-	// You might need to confirm the exact flag if 'run' isn't sufficient or if specific 
+	// You might need to confirm the exact flag if 'run' isn't sufficient or if specific
 	// device targeting is needed. Based on common usage, 'run' is often global.
 	cmd := exec.Command("linux-enable-ir-emitter", "run")
 	if output, err := cmd.CombinedOutput(); err != nil {

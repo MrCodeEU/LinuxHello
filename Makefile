@@ -248,22 +248,50 @@ install: build build-pam ## Install system-wide
 	cp -r python-service/*.py python-service/requirements.txt $(DESTDIR)/opt/facelock/python-service/
 	cp systemd/facelock-inference.service /etc/systemd/system/
 	@if [ -f models/scrfd_person_2.5g.onnx ]; then cp models/*.onnx $(DESTDIR)/opt/facelock/models/; fi
+	install -m 755 scripts/facelock-pam $(DESTDIR)$(BINDIR)/
 	@echo ""
 	@echo "✅ Installation complete!"
 	@echo ""
 	@echo "Next steps:"
-	@echo "  sudo systemctl start facelock-inference"
-	@echo "  sudo systemctl enable facelock-inference"
-	@echo "  facelock-enroll -user $$USER"
+	@echo "  1. sudo systemctl start facelock-inference"
+	@echo "  2. sudo systemctl enable facelock-inference"
+	@echo "  3. facelock-enroll -user $$USER"
+	@echo "  4. facelock-pam test"
+	@echo "  5. sudo facelock-pam enable sudo"
 
 uninstall: ## Uninstall LinuxHello
 	rm -f $(DESTDIR)$(BINDIR)/$(BINARY_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/$(ENROLL_BINARY)
 	rm -f $(DESTDIR)$(BINDIR)/$(TEST_BINARY)
+	rm -f $(DESTDIR)$(BINDIR)/facelock-pam
 	rm -f $(DESTDIR)$(PAMDIR)/$(PAM_MODULE)
 	rm -f /etc/systemd/system/facelock-inference.service
 	@echo "Note: Config and data not removed. To fully clean:"
 	@echo "  sudo rm -rf $(SYSCONFDIR)/facelock /opt/facelock /var/lib/facelock"
+
+# =============================================================================
+# PAM Integration
+# =============================================================================
+
+pam-status: ## Show PAM integration status
+	@./scripts/facelock-pam status
+
+pam-enable-sudo: ## Enable face auth for sudo (safest first step)
+	@sudo ./scripts/facelock-pam enable sudo
+
+pam-enable-polkit: ## Enable face auth for GUI password dialogs
+	@sudo ./scripts/facelock-pam enable polkit
+
+pam-enable-sddm: ## Enable face auth for SDDM login (KDE)
+	@sudo ./scripts/facelock-pam enable sddm
+
+pam-disable-all: ## Disable face auth for all services
+	@sudo ./scripts/facelock-pam disable sudo
+	@sudo ./scripts/facelock-pam disable polkit
+	@sudo ./scripts/facelock-pam disable sddm
+
+pam-restore: ## Restore all PAM configs from backup
+	@sudo ./scripts/facelock-pam restore
 
 # =============================================================================
 # Cleanup

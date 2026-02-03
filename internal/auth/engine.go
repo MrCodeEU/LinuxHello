@@ -428,7 +428,7 @@ func convertToRGB(img image.Image) *image.RGBA {
 
 	// Calculate min/max luminance for auto-contrast
 	minY, maxY := 255, 0
-	
+
 	// Sample center area for statistics (ignore borders which might be noisy)
 	// or just scan the whole image (it's small enough typically)
 	// For speed, let's scan with a stride
@@ -439,7 +439,7 @@ func convertToRGB(img image.Image) *image.RGBA {
 			r := int(rgba.Pix[off])
 			g := int(rgba.Pix[off+1])
 			b := int(rgba.Pix[off+2])
-			
+
 			// Simple luminance approximation
 			lum := (r + g + g + b) >> 2
 			if lum < minY {
@@ -470,10 +470,10 @@ func convertToRGB(img image.Image) *image.RGBA {
 		}
 
 		targetMin := 0.0
-		
+
 		// If the range is very compressed, we might amplify noise, so limit scale?
 		// But in dark IR, range is naturally compressed, so we DO want amplification.
-		
+
 		scale := (targetMax - targetMin) / float64(maxY-minY)
 
 		for i := 0; i < len(rgba.Pix); i += 4 {
@@ -481,7 +481,7 @@ func convertToRGB(img image.Image) *image.RGBA {
 			for k := 0; k < 3; k++ {
 				val := float64(int(rgba.Pix[i+k]) - minY)
 				val = val*scale + targetMin
-				
+
 				// Clamp
 				if val < 0 {
 					val = 0
@@ -997,7 +997,7 @@ func (e *Engine) EnrollUser(username string, numSamples int, debugDir string) (*
 
 		if len(detections) == 0 {
 			e.logger.Warnf("No face detected in sample %d, attempting IR re-trigger and retry...", i+1)
-			
+
 			// Try one more time with forced IR trigger if detection failed
 			_ = e.TriggerIR()
 			// Increased wait time for emitter to stabilize
@@ -1008,13 +1008,13 @@ func (e *Engine) EnrollUser(username string, numSamples int, debugDir string) (*
 				if img2, err := frame2.ToImage(); err == nil {
 					// Enhance retry frame
 					enhancedImg2 := convertToRGB(img2)
-					
+
 					detections2, err := e.detectFaces(enhancedImg2)
 					if err == nil && len(detections2) > 0 {
 						e.logger.Infof("Recovered face detection after IR re-trigger")
 						enhancedImg = enhancedImg2
 						detections = detections2
-						
+
 						// Save recovered debug image
 						if debugDir != "" {
 							filename := filepath.Join(debugDir, fmt.Sprintf("sample_%d_recovered.jpg", i+1))
