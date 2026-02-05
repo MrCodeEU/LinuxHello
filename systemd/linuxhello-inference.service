@@ -1,0 +1,35 @@
+[Unit]
+Description=LinuxHello Inference Service (AI Backend)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/share/linuxhello/python-service
+# Use Ryzen AI venv if available, otherwise create system venv
+ExecStartPre=/bin/bash -c 'cd /usr/share/linuxhello/python-service && \
+    VENV_PATH="" && \
+    for p in /root/.ryzen-ai /home/*/.ryzen-ai; do \
+        if [ -f "$p/bin/python3" ]; then VENV_PATH="$p"; break; fi; \
+    done && \
+    if [ -n "$VENV_PATH" ]; then \
+        ln -sfn "$VENV_PATH" venv; \
+    elif [ ! -f venv/bin/python3 ]; then \
+        python3 -m venv venv && ./venv/bin/pip install --quiet -r requirements.txt; \
+    fi'
+ExecStart=/usr/share/linuxhello/python-service/venv/bin/python3 inference_service.py --host 127.0.0.1 --port 50051
+# Clean shutdown
+ExecStop=/bin/kill -TERM $MAINPID
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/usr/share/linuxhello /var/lib/linuxhello
+
+[Install]
+WantedBy=multi-user.target

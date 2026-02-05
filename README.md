@@ -6,102 +6,77 @@
 >
 > **Tested Platform**: Fedora 41 + KDE Plasma 6 only. Other distributions may work but are untested.
 
-A Windows Hello-style face authentication system for Linux. Uses IR cameras for secure face recognition with anti-spoofing protection.
+A Windows Hello-style face authentication system for Linux that provides:
 
-## ⚠️ Prerequisites
+- 🔐 **PAM Integration**: Face authentication for `sudo`, login screens, and system unlock
+- 🌐 **Web Management**: Easy enrollment and configuration through browser interface  
+- 📷 **IR Camera Support**: Uses infrared cameras with anti-spoofing protection
+- 🧠 **AI-Powered**: Real-time face detection and recognition using ONNX models
+- 🐧 **Linux Native**: Built specifically for Linux with systemd integration
 
-### Required: Linux IR Emitter Support
+## 🚀 Quick Start
 
-Before using LinuxHello, you **MUST** set up IR camera support using the `linux-enable-ir-emitter` project:
+### Installation
 
+📦 **Easy Install** - Download pre-built packages:
+- **[Complete Installation Guide](INSTALL.md)** - Step-by-step instructions
+- **[Latest Releases](https://github.com/MrCodeEU/LinuxHello/releases)** - RPM, DEB, and generic packages
+
+### Quick RPM Install (Fedora/RHEL/CentOS)
 ```bash
-# Install linux-enable-ir-emitter
-# See: https://github.com/EmixamPP/linux-enable-ir-emitter
+wget https://github.com/MrCodeEU/LinuxHello/releases/latest/download/linuxhello-*.rpm
+sudo dnf install linuxhello-*.rpm
+sudo systemctl enable --now linuxhello-inference linuxhello-gui
+```
 
-# Fedora
+### Quick Setup  
+```bash
+# 1. Open web interface
+firefox http://localhost:8080
+
+# 2. Enroll your face in the GUI, then:
+sudo linuxhello-pam enable sudo
+sudo -k && sudo ls  # Test face authentication!
+```
+
+## 🎯 Features
+
+- **🔐 PAM Integration**: Face authentication for `sudo`, login, and screen unlock
+- **🌐 Web Interface**: Easy enrollment and management through browser  
+- **📷 IR Camera Support**: Works in darkness with anti-spoofing protection
+- **🧠 AI Recognition**: Fast, accurate face detection and recognition
+- **👁️ Visual Debugging**: Real-time detection visualization and confidence scores
+- **👥 Multi-User**: Support for multiple enrolled users
+
+## ⚠️ Hardware Requirements
+
+### IR Camera + linux-enable-ir-emitter
+
+**Required Setup** (do this first):
+```bash
+# Install IR emitter support
 sudo dnf copr enable emixampp/linux-enable-ir-emitter
 sudo dnf install linux-enable-ir-emitter
 
-# Ubuntu/Debian
-# Follow instructions at the GitHub repository
-
-# Configure your IR camera
+# Configure your camera
 sudo linux-enable-ir-emitter configure
-
-# Test that IR emitter works
-linux-enable-ir-emitter run
 ```
 
-**Without proper IR emitter configuration, face detection will fail in low-light conditions.**
+**Supported Hardware**: Windows Hello compatible IR cameras (most laptops have these)
 
-### Hardware Requirements
+## 🏗️ Development
 
-- **IR Camera**: Windows Hello compatible camera (most modern laptops have these)
-- **Supported Cameras**: Any V4L2-compatible IR camera
-- **Tested Hardware**: 
-  - Laptop integrated IR cameras (Lenovo ThinkPad, Dell XPS, HP EliteBook)
-  - Intel RealSense D400 series
-
-### Software Requirements
-
-- Linux (Fedora 39+, Ubuntu 22.04+, Debian 12+, Arch Linux)
-- Go 1.21+
-- Python 3.10-3.12 (for inference service)
-- GCC/G++ compiler
-
-## Features
-
-- **IR Face Recognition**: Works in complete darkness using IR cameras
-- **Anti-Spoofing**: Rejects photos/screens (IR-based detection)
-- **Fast Authentication**: <500ms typical authentication time
-- **Challenge-Response**: Optional head movement verification
-- **PAM Integration**: Works with sudo, login, screen lock
-- **Auto-Lock**: Automatic screen lock when user leaves (planned)
-
-## Quick Start
-
-### 1. Clone and Build
-
+### From Source
 ```bash
-git clone https://github.com/yourusername/LinuxHello.git
+git clone https://github.com/MrCodeEU/LinuxHello.git
 cd LinuxHello
-
-# Setup Python environment and dependencies
-make setup
-
-# Build all binaries
-make build
+make setup && make build
 ```
 
-### 2. Download AI Models
-
+### Local Testing with Act
 ```bash
-# Download required ONNX models
-make download-models
-
-# Or manually download:
-# - SCRFD face detection: models/scrfd_person_2.5g.onnx
-# - ArcFace recognition: models/arcface_r50.onnx
-```
-
-### 3. Enroll Your Face
-
-```bash
-# Start enrollment (captures 5 samples)
-make test-enroll
-
-# Or run directly with debug output
-./bin/facelock-enroll -user $USER -debug
-```
-
-### 4. Test Authentication
-
-```bash
-# Test face authentication
-make test-auth
-
-# Or run directly
-./bin/facelock-test
+# Test GitHub workflow locally
+./test-workflow.sh
 ```
 
 ## Platform Support
@@ -112,167 +87,43 @@ make test-auth
 | Fedora + GNOME | 🔶 Untested | Should work |
 | Ubuntu + KDE | 🔶 Untested | Should work |
 | Ubuntu + GNOME | 🔶 Untested | Should work |
-| Arch Linux | 🔶 Untested | Should work |
-| Debian | 🔶 Untested | Should work |
-| Other | ❓ Unknown | May require modifications |
+## 🛠️ Configuration
 
-## PAM Integration
-
-> ⚠️ **WARNING**: Misconfiguring PAM can lock you out of your system!  
-> Always keep a root terminal open when testing PAM changes.
-
-### Automated PAM Management (Recommended)
-
-LinuxHello includes a safe PAM management tool with automatic backups:
-
-```bash
-# Check current PAM status
-facelock-pam status
-
-# Test face authentication before enabling
-facelock-pam test
-
-# Enable for sudo (safest first step)
-sudo facelock-pam enable sudo
-
-# Enable for GUI password dialogs (PolicyKit)
-sudo facelock-pam enable polkit
-
-# Enable for SDDM login (KDE)
-sudo facelock-pam enable sddm
-
-# Disable if something goes wrong
-sudo facelock-pam disable sudo
-sudo facelock-pam disable polkit
-
-# Restore original configs from backup
-sudo facelock-pam restore
-
-# List all available services
-facelock-pam list
-```
-
-Convenience make targets:
-
-```bash
-make pam-status        # Show PAM integration status
-make pam-enable-sudo   # Enable for sudo
-make pam-enable-polkit # Enable for GUI dialogs
-make pam-enable-sddm   # Enable for SDDM
-make pam-disable-all   # Disable everything
-make pam-restore       # Restore all backups
-```
-
-### Supported Services
-
-| Service | Description | Risk Level |
-|---------|-------------|------------|
-| `sudo` | Terminal sudo commands | 🟢 Low (fallback to password) |
-| `su` | Switch user command | 🟢 Low (fallback to password) |
-| `polkit` | GUI password dialogs | 🟢 Low (fallback to password) |
-| `sddm` | KDE display manager | 🟡 Medium |
-| `gdm` | GNOME display manager | 🟡 Medium |
-| `lightdm` | LightDM display manager | 🟡 Medium |
-| `login` | TTY console login | 🟡 Medium |
-| `system-auth` | Fedora/RHEL global auth | 🔴 High (affects everything) |
-| `common-auth` | Debian/Ubuntu global auth | 🔴 High (affects everything) |
-| `kde` | KDE screen locker | 🟡 Medium |
-
-### Safety Features
-
-- **Automatic Backups**: All original configs saved to `/var/lib/facelock/pam-backups/`
-- **Password Fallback**: Face auth always falls back to password on failure
-- **Lockout Recovery**: Boot to single-user mode and run `facelock-pam restore`
-- **Timestamped Backups**: Multiple backup versions preserved
-- **Dry-Run Support**: Use `-n` flag to see changes without applying
-
-### Emergency Recovery
-
-If you get locked out:
-
-1. **Reboot** and enter GRUB menu
-2. **Edit boot entry**: Add `init=/bin/bash` to kernel line
-3. **Remount root**: `mount -o remount,rw /`
-4. **Restore PAM**: `/usr/local/bin/facelock-pam restore`
-5. **Reboot**: `reboot -f`
-
-Or from a live USB:
-
-```bash
-# Mount your root partition
-sudo mount /dev/sdXn /mnt
-
-# Restore PAM backups
-sudo cp /mnt/var/lib/facelock/pam-backups/*.backup /mnt/etc/pam.d/
-```
-
-## Configuration
-
-Configuration file: `/etc/facelock/facelock.conf` or `~/.config/facelock/facelock.conf`
-
+Default config at `/etc/linuxhello/linuxhello.conf`:
 ```yaml
 camera:
-  device: "/dev/video0"  # IR camera device
-  width: 640
-  height: 480
-
+  device: "/dev/video0"    # Your IR camera
 recognition:
-  threshold: 0.6         # Similarity threshold (0.5-0.8)
-  
-liveness:
-  enabled: true          # Anti-spoofing check
-  
+  threshold: 0.6           # Similarity threshold (0.5-0.8)
 auth:
-  timeout: 10            # Seconds before timeout
-  max_attempts: 3        # Max failed attempts
+  timeout: 10             # Seconds before timeout
 ```
 
-## Project Structure
+## ⚠️ Safety & Recovery
 
-```
-LinuxHello/
-├── cmd/                    # Command-line tools
-│   ├── facelock/          # Main PAM daemon
-│   ├── facelock-enroll/   # Face enrollment tool
-│   └── facelock-test/     # Authentication tester
-├── internal/              # Core Go packages
-│   ├── auth/              # Authentication engine
-│   ├── camera/            # V4L2 camera interface
-│   ├── config/            # Configuration loader
-│   └── embedding/         # Face embedding storage
-├── pkg/                   # Public packages
-│   ├── models/            # gRPC client
-│   └── pam/               # PAM module
-├── python-service/        # Python inference service
-│   ├── inference_service.py
-│   └── requirements.txt
-├── models/                # ONNX models (download separately)
-├── configs/               # Configuration templates
-└── scripts/               # Installation scripts
-```
+**PAM Safety Features:**
+- Automatic backups of all PAM configs
+- Always falls back to password on face auth failure  
+- Emergency recovery: Boot to single-user and run `linuxhello-pam restore`
 
-## Development
+**Keep Alternative Access:**
+- Always test with `sudo -k && sudo ls` first
+- Keep a root terminal open when testing PAM changes
+- Have a live USB ready for emergency recovery
 
-### Build Commands
+## 🤝 Contributing & Support
 
-```bash
-make build          # Build all binaries
-make test           # Run tests
-make lint           # Run linter
-make clean          # Clean build artifacts
-make setup          # Setup Python environment
-```
+- **Documentation**: See [INSTALL.md](INSTALL.md) for detailed setup
+- **Issues**: Report bugs and feature requests on GitHub
+- **Development**: `make setup && make build` to build from source
 
-### Testing
+## 📝 License
 
-```bash
-make test-enroll    # Test enrollment process
-make test-auth      # Test authentication
-```
+MIT License - See LICENSE file for details
 
-## Troubleshooting
+---
 
-### "No face detected"
+**⚠️ Disclaimer**: This is experimental software. Use at your own risk and always maintain alternative authentication methods.
 
 1. Ensure IR emitter is working: `linux-enable-ir-emitter run`
 2. Check camera device: `v4l2-ctl --list-devices`
@@ -302,7 +153,7 @@ v4l2-ctl -d /dev/video0 --all
 # Boot into recovery mode or use TTY
 # Remove the PAM line you added:
 sudo nano /etc/pam.d/sudo
-# Delete the "auth sufficient pam_facelock.so" line
+# Delete the "auth sufficient pam_linuxhello.so" line
 ```
 
 ## Roadmap

@@ -3,21 +3,23 @@ package auth
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/jpeg"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	inference "github.com/facelock/facelock/api"
-	"github.com/facelock/facelock/internal/camera"
-	"github.com/facelock/facelock/internal/config"
-	"github.com/facelock/facelock/internal/embedding"
-	"github.com/facelock/facelock/pkg/models"
+	inference "github.com/MrCodeEU/LinuxHello/api"
+	"github.com/MrCodeEU/LinuxHello/internal/camera"
+	"github.com/MrCodeEU/LinuxHello/internal/config"
+	"github.com/MrCodeEU/LinuxHello/internal/embedding"
+	"github.com/MrCodeEU/LinuxHello/pkg/models"
 	"github.com/sirupsen/logrus"
 )
 
@@ -32,6 +34,23 @@ type Result struct {
 	ChallengePassed bool
 	Error           error
 	ProcessingTime  time.Duration
+}
+
+// DebugInfo contains debug information for authentication testing
+type DebugInfo struct {
+	ImageData     string             `json:"image_data"` // Base64 encoded JPEG
+	ImageWidth    int                `json:"image_width"`
+	ImageHeight   int                `json:"image_height"`
+	BoundingBoxes []DebugBoundingBox `json:"bounding_boxes"`
+}
+
+// DebugBoundingBox represents a detected face bounding box
+type DebugBoundingBox struct {
+	X          int     `json:"x"`
+	Y          int     `json:"y"`
+	Width      int     `json:"width"`
+	Height     int     `json:"height"`
+	Confidence float64 `json:"confidence"`
 }
 
 // Engine orchestrates the authentication pipeline
@@ -133,7 +152,14 @@ func (e *Engine) Start() error {
 		return fmt.Errorf("camera not initialized")
 	}
 
-	return e.camera.Start()
+	if err := e.camera.Start(); err != nil {
+		return err
+	}
+
+	// Give camera time to warm up and produce valid frames
+	time.Sleep(200 * time.Millisecond)
+
+	return nil
 }
 
 // Stop stops the camera capture
@@ -186,9 +212,37 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 		return result, nil
 	}
 
-	// 2. Allow result to carry detection info if needed in future (omitted for now)
+	// 2. Liveness Check
+	if err := e.performLivenessCheck(img, detection, result); err != nil {
+		result.ProcessingTime = time.Since(startTime)
+		return result, nil
+	}
 
-	// 3. Liveness Check
+	// 3. Challenge-Response
+	if err := e.performChallenge(ctx, detection, result); err != nil {
+		result.ProcessingTime = time.Since(startTime)
+		return result, nil
+	}
+
+	// 4. Identification
+	if err := e.performIdentification(img, detection, result); err != nil {
+		result.ProcessingTime = time.Since(startTime)
+		return result, nil
+	}
+
+	// Success
+	result.Success = true
+	result.ProcessingTime = time.Since(startTime)
+
+	e.recordSuccessfulAuth(result)
+	e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
+		result.User.Username, result.Confidence, result.ProcessingTime)
+
+	return result, nil
+}
+
+// performLivenessCheck handles the liveness verification step
+func (e *Engine) performLivenessCheck(img image.Image, detection models.Detection, result *Result) error {
 	if e.config.Liveness.Enabled {
 		passed, err := e.verifyLiveness(img, detection)
 		result.LivenessPassed = passed
@@ -197,14 +251,16 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 				e.logger.Warnf("Liveness check error: %v", err)
 			}
 			result.Error = fmt.Errorf("liveness check failed - possible photo or screen")
-			result.ProcessingTime = time.Since(startTime)
-			return result, nil
+			return result.Error
 		}
 	} else {
 		result.LivenessPassed = true
 	}
+	return nil
+}
 
-	// 4. Challenge-Response
+// performChallenge handles the challenge-response step
+func (e *Engine) performChallenge(ctx context.Context, detection models.Detection, result *Result) error {
 	if e.config.Challenge.Enabled {
 		passed, err := e.runChallenge(ctx, detection)
 		result.ChallengePassed = passed
@@ -213,14 +269,16 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 		}
 		if !passed {
 			result.Error = fmt.Errorf("challenge-response failed")
-			result.ProcessingTime = time.Since(startTime)
-			return result, nil
+			return result.Error
 		}
 	} else {
 		result.ChallengePassed = true
 	}
+	return nil
+}
 
-	// 5. Identification
+// performIdentification handles the face identification step
+func (e *Engine) performIdentification(img image.Image, detection models.Detection, result *Result) error {
 	user, confidence, err := e.identifyFace(img, detection)
 	if err != nil {
 		if confidence > 0 {
@@ -229,25 +287,20 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 		} else {
 			result.Error = fmt.Errorf("identification failed: %w", err)
 		}
-		result.ProcessingTime = time.Since(startTime)
-		return result, nil
+		return result.Error
 	}
 
-	// Success
-	result.Success = true
 	result.User = user
 	result.Confidence = confidence
-	result.ProcessingTime = time.Since(startTime)
+	return nil
+}
 
+// recordSuccessfulAuth records a successful authentication
+func (e *Engine) recordSuccessfulAuth(result *Result) {
 	_ = e.embeddingStore.RecordAuth(
-		user.ID, user.Username, true, confidence,
+		result.User.ID, result.User.Username, true, result.Confidence,
 		result.LivenessPassed, result.ChallengePassed, "",
 	)
-
-	e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
-		user.Username, confidence, result.ProcessingTime)
-
-	return result, nil
 }
 
 func (e *Engine) captureAndDetect() (image.Image, models.Detection, error) {
@@ -255,36 +308,84 @@ func (e *Engine) captureAndDetect() (image.Image, models.Detection, error) {
 		return nil, models.Detection{}, fmt.Errorf("inference client not connected")
 	}
 
+	// Try multiple fresh frames to find the best one
+	maxAttempts := 10
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		img, detection, err := e.attemptCaptureFrame(attempt)
+		if err != nil {
+			continue // Try next attempt
+		}
+
+		e.logger.Infof("Successfully captured frame with face detection on attempt %d (confidence: %.3f)",
+			attempt+1, detection.Confidence)
+
+		return img, detection, nil
+	}
+
+	// All attempts failed
+	return nil, models.Detection{}, fmt.Errorf("no face detected after %d attempts (ensure face is visible and well-lit)", maxAttempts)
+}
+
+// attemptCaptureFrame attempts to capture and process a single frame
+func (e *Engine) attemptCaptureFrame(attempt int) (image.Image, models.Detection, error) {
+	// Small delay between frame captures to ensure fresh frames
+	if attempt > 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Capture frame
+	img, err := e.captureFrameFromCamera(attempt)
+	if err != nil {
+		return nil, models.Detection{}, err
+	}
+
+	// Detect faces
+	detection, err := e.detectSingleFace(img, attempt)
+	if err != nil {
+		return nil, models.Detection{}, err
+	}
+
+	return img, detection, nil
+}
+
+// captureFrameFromCamera captures and enhances a frame from the camera
+func (e *Engine) captureFrameFromCamera(attempt int) (image.Image, error) {
 	frame, ok := e.camera.GetFrame()
-	if !ok {
-		return nil, models.Detection{}, fmt.Errorf("failed to capture frame")
+	if !ok || frame == nil {
+		return nil, fmt.Errorf("failed to capture frame on attempt %d", attempt+1)
 	}
 
 	img, err := frame.ToImage()
 	if err != nil {
-		return nil, models.Detection{}, fmt.Errorf("failed to convert frame: %w", err)
+		return nil, fmt.Errorf("failed to convert frame on attempt %d: %w", attempt+1, err)
 	}
 
-	detections, err := e.detectFaces(img)
+	// Enhance the image for better detection
+	return EnhanceImage(img), nil
+}
+
+// detectSingleFace detects faces and ensures exactly one face is found
+func (e *Engine) detectSingleFace(img image.Image, attempt int) (models.Detection, error) {
+	detections, err := e.DetectFaces(img)
 	if err != nil {
-		return nil, models.Detection{}, fmt.Errorf("face detection failed: %w", err)
+		return models.Detection{}, fmt.Errorf("face detection failed on attempt %d: %w", attempt+1, err)
 	}
 
 	if len(detections) == 0 {
-		return nil, models.Detection{}, fmt.Errorf("no face detected")
+		return models.Detection{}, fmt.Errorf("no face detected on attempt %d", attempt+1)
 	}
 
 	if len(detections) > 1 {
-		return nil, models.Detection{}, fmt.Errorf("multiple faces detected")
+		return models.Detection{}, fmt.Errorf("multiple faces detected on attempt %d (%d faces)", attempt+1, len(detections))
 	}
 
-	return img, detections[0], nil
+	return detections[0], nil
 }
 
 func (e *Engine) verifyLiveness(img image.Image, detection models.Detection) (bool, error) {
 	// Try gRPC liveness detector first if available
 	if e.inferenceClient != nil {
-		livenessPassed, err := e.checkLiveness(img, detection)
+		livenessPassed, err := e.CheckLiveness(img, detection)
 		if err == nil {
 			return livenessPassed, nil
 		}
@@ -292,7 +393,7 @@ func (e *Engine) verifyLiveness(img image.Image, detection models.Detection) (bo
 	}
 
 	// Fallback to basic liveness detection
-	faceRegion := e.extractRegion(img, detection)
+	faceRegion := e.ExtractRegion(img, detection)
 	livenessPassed, confidence, err := e.basicLiveness.CheckLiveness(faceRegion)
 	if err != nil {
 		return false, err
@@ -305,11 +406,23 @@ func (e *Engine) runChallenge(ctx context.Context, detection models.Detection) (
 	if e.challengeSystem == nil {
 		return true, nil
 	}
-	return e.performChallenge(ctx, detection)
+
+	// Generate challenge
+	challenge := e.challengeSystem.GenerateChallenge()
+	e.logger.Infof("Challenge: %s", challenge.Description)
+
+	// Wait for challenge completion
+	timeout := time.Duration(e.config.Challenge.TimeoutSeconds) * time.Second
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	completed := e.challengeSystem.WaitForChallenge(timeoutCtx, challenge, e.camera, detection)
+
+	return completed, nil
 }
 
 func (e *Engine) identifyFace(img image.Image, detection models.Detection) (*embedding.User, float64, error) {
-	emb, err := e.extractEmbedding(img, detection)
+	emb, err := e.ExtractEmbedding(img, detection)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to extract embedding: %w", err)
 	}
@@ -355,7 +468,7 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 
 	// Liveness check
 	if e.config.Liveness.Enabled && e.inferenceClient != nil {
-		livenessPassed, err := e.checkLiveness(img, detection)
+		livenessPassed, err := e.CheckLiveness(img, detection)
 		result.LivenessPassed = livenessPassed
 		if err != nil {
 			e.logger.Warnf("Liveness check failed: %v", err)
@@ -374,7 +487,7 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 	}
 
 	// Extract embedding
-	embedding, err := e.extractEmbedding(img, detection)
+	embedding, err := e.ExtractEmbedding(img, detection)
 	if err != nil {
 		result.Error = fmt.Errorf("failed to extract embedding: %w", err)
 		return result, nil
@@ -416,31 +529,119 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 	return result, nil
 }
 
-// convertToRGB converts a grayscale image to RGB for JPEG encoding
+// AuthenticateWithDebug performs authentication and returns debug information
+func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo, error) {
+	startTime := time.Now()
+	result := &Result{Success: false}
+	debugInfo := &DebugInfo{}
+
+	// Capture and detect with debug info
+	img, detection, err := e.captureAndDetect()
+
+	// Always prepare debug image info
+	e.prepareDebugImageInfo(img, debugInfo)
+
+	if err != nil {
+		result.Error = err
+		result.ProcessingTime = time.Since(startTime)
+		return result, debugInfo, nil
+	}
+
+	// Add detection debug info
+	e.addDetectionDebugInfo(img, detection, debugInfo)
+
+	// Perform authentication steps
+	if err := e.performDebugAuthentication(ctx, img, detection, result); err != nil {
+		result.ProcessingTime = time.Since(startTime)
+		return result, debugInfo, nil
+	}
+
+	// Success
+	result.Success = true
+	result.ProcessingTime = time.Since(startTime)
+	e.recordSuccessfulAuth(result)
+
+	e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
+		result.User.Username, result.Confidence, result.ProcessingTime)
+
+	return result, debugInfo, nil
+}
+
+// prepareDebugImageInfo prepares image data for debug output
+func (e *Engine) prepareDebugImageInfo(img image.Image, debugInfo *DebugInfo) {
+	if img == nil {
+		return
+	}
+
+	bounds := img.Bounds()
+	debugInfo.ImageWidth = bounds.Dx()
+	debugInfo.ImageHeight = bounds.Dy()
+
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err == nil {
+		debugInfo.ImageData = base64.StdEncoding.EncodeToString(buf.Bytes())
+	}
+}
+
+// addDetectionDebugInfo adds bounding box information to debug info
+func (e *Engine) addDetectionDebugInfo(img image.Image, detection models.Detection, debugInfo *DebugInfo) {
+	imgBounds := img.Bounds()
+	x1 := int(math.Max(0, float64(detection.X1)))
+	y1 := int(math.Max(0, float64(detection.Y1)))
+	x2 := int(math.Min(float64(imgBounds.Dx()), float64(detection.X2)))
+	y2 := int(math.Min(float64(imgBounds.Dy()), float64(detection.Y2)))
+
+	debugInfo.BoundingBoxes = []DebugBoundingBox{
+		{
+			X:          x1,
+			Y:          y1,
+			Width:      x2 - x1,
+			Height:     y2 - y1,
+			Confidence: float64(detection.Confidence),
+		},
+	}
+}
+
+// performDebugAuthentication performs the authentication steps for debug mode
+func (e *Engine) performDebugAuthentication(_ context.Context, img image.Image, detection models.Detection, result *Result) error {
+	// Liveness Check
+	if err := e.performLivenessCheck(img, detection, result); err != nil {
+		return err
+	}
+
+	// Challenge-Response (skip for debug test)
+	result.ChallengePassed = true
+
+	// Identification
+	return e.performIdentification(img, detection, result)
+}
+
+// EnhanceImage converts a grayscale image to RGB for JPEG encoding
 // and applies auto-contrast enhancement
-func convertToRGB(img image.Image) *image.RGBA {
+func EnhanceImage(img image.Image) *image.RGBA {
 	bounds := img.Bounds()
 	rgba := image.NewRGBA(bounds)
 
 	// Draw source to RGBA (handles format conversion)
 	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
 
-	// Calculate min/max luminance for auto-contrast
-	minY, maxY := 255, 0
+	// Calculate luminance statistics
+	minY, maxY := calculateLuminanceRange(rgba, bounds)
 
-	// Sample center area for statistics (ignore borders which might be noisy)
-	// or just scan the whole image (it's small enough typically)
-	// For speed, let's scan with a stride
+	// Apply contrast enhancement
+	applyContrastEnhancement(rgba, minY, maxY)
+
+	return rgba
+}
+
+// calculateLuminanceRange computes the min and max luminance values in the image
+func calculateLuminanceRange(rgba *image.RGBA, bounds image.Rectangle) (int, int) {
+	minY, maxY := 255, 0
 	stride := 4
+
 	for y := bounds.Min.Y; y < bounds.Max.Y; y += stride {
 		for x := bounds.Min.X; x < bounds.Max.X; x += stride {
-			off := rgba.PixOffset(x, y)
-			r := int(rgba.Pix[off])
-			g := int(rgba.Pix[off+1])
-			b := int(rgba.Pix[off+2])
-
-			// Simple luminance approximation
-			lum := (r + g + g + b) >> 2
+			lum := calculatePixelLuminance(rgba, x, y)
 			if lum < minY {
 				minY = lum
 			}
@@ -450,60 +651,89 @@ func convertToRGB(img image.Image) *image.RGBA {
 		}
 	}
 
+	return minY, maxY
+}
+
+// calculatePixelLuminance calculates the luminance of a pixel at given coordinates
+func calculatePixelLuminance(rgba *image.RGBA, x, y int) int {
+	off := rgba.PixOffset(x, y)
+	r := int(rgba.Pix[off])
+	g := int(rgba.Pix[off+1])
+	b := int(rgba.Pix[off+2])
+
+	// Simple luminance approximation
+	return (r + g + g + b) >> 2
+}
+
+// applyContrastEnhancement applies contrast stretching to the image
+func applyContrastEnhancement(rgba *image.RGBA, minY, maxY int) {
 	// Apply contrast stretching if range is sufficient
+	if maxY <= minY+20 {
+		return // Skip enhancement if range is too small
+	}
+
+	scale := calculateContrastScale(minY, maxY)
+	targetMin := 0.0
+
+	enhancePixels(rgba, minY, maxY, scale, targetMin)
+}
+
+// calculateContrastScale determines the scaling factor for contrast enhancement
+func calculateContrastScale(minY, maxY int) float64 {
 	// "Smart" auto-contrast:
-	// 1. If image is dark (max < 210), boost it to ~210.
-	// 2. If image is bright (max > 210), keep exposure (don't blow out highlights).
-	// 3. Always fix black point (subtract min).
-	// This fixes both "Too Dark" (IR) and "Too Bright" (User close to camera) cases.
-	if maxY > minY+10 {
-		// Determine target max peak
-		// We want at least peak brightness of 210, but not more than original if it was already bright
-		targetMax := float64(maxY)
-		if targetMax < 210.0 {
-			targetMax = 210.0
-		}
-		// Clamp ceiling
-		if targetMax > 255.0 {
-			targetMax = 255.0
-		}
-
-		targetMin := 0.0
-
-		// If the range is very compressed, we might amplify noise, so limit scale?
-		// But in dark IR, range is naturally compressed, so we DO want amplification.
-
-		scale := (targetMax - targetMin) / float64(maxY-minY)
-
-		for i := 0; i < len(rgba.Pix); i += 4 {
-			// R, G, B
-			for k := 0; k < 3; k++ {
-				val := float64(int(rgba.Pix[i+k]) - minY)
-				val = val*scale + targetMin
-
-				// Clamp
-				if val < 0 {
-					val = 0
-				}
-				if val > 255 {
-					val = 255
-				}
-				rgba.Pix[i+k] = uint8(val)
-			}
+	// If image is already quite bright (maxY > 180), be very gentle
+	targetMax := 210.0
+	if maxY > 180 {
+		targetMax = float64(maxY) + 10 // Only slight boost
+		if targetMax > 255 {
+			targetMax = 255
 		}
 	}
 
-	return rgba
+	scale := (targetMax - 0.0) / float64(maxY-minY)
+
+	// Don't over-amplify (max scale 3.0)
+	if scale > 3.0 {
+		scale = 3.0
+	}
+
+	return scale
 }
 
-// detectFaces detects faces in an image using gRPC client
-func (e *Engine) detectFaces(img image.Image) ([]models.Detection, error) {
+// enhancePixels applies the contrast enhancement to all pixels in the image
+func enhancePixels(rgba *image.RGBA, minY, _ int, scale, targetMin float64) {
+	for i := 0; i < len(rgba.Pix); i += 4 {
+		// R, G, B channels
+		for k := 0; k < 3; k++ {
+			val := float64(int(rgba.Pix[i+k]) - minY)
+			val = val*scale + targetMin
+
+			// Clamp to valid range
+			val = clampValue(val)
+			rgba.Pix[i+k] = uint8(val)
+		}
+	}
+}
+
+// clampValue clamps a value to the valid pixel range [0, 255]
+func clampValue(val float64) float64 {
+	if val < 0 {
+		return 0
+	}
+	if val > 255 {
+		return 255
+	}
+	return val
+}
+
+// DetectFaces detects faces in an image using gRPC client
+func (e *Engine) DetectFaces(img image.Image) ([]models.Detection, error) {
 	if e.inferenceClient == nil {
 		return nil, fmt.Errorf("inference client not initialized")
 	}
 
 	// Convert to RGB for JPEG encoding (IR cameras output grayscale)
-	rgbImg := convertToRGB(img)
+	rgbImg := EnhanceImage(img)
 
 	// Encode image as JPEG
 	var buf bytes.Buffer
@@ -551,14 +781,14 @@ func (e *Engine) detectFaces(img image.Image) ([]models.Detection, error) {
 	return detections, nil
 }
 
-// extractEmbedding extracts face embedding using gRPC client
-func (e *Engine) extractEmbedding(img image.Image, detection models.Detection) ([]float32, error) {
+// ExtractEmbedding extracts face embedding using gRPC client
+func (e *Engine) ExtractEmbedding(img image.Image, detection models.Detection) ([]float32, error) {
 	if e.inferenceClient == nil {
 		return nil, fmt.Errorf("inference client not initialized")
 	}
 
 	// Convert to RGB for JPEG encoding (IR cameras output grayscale)
-	rgbImg := convertToRGB(img)
+	rgbImg := EnhanceImage(img)
 
 	// Encode image as JPEG
 	var buf bytes.Buffer
@@ -602,14 +832,14 @@ func (e *Engine) extractEmbedding(img image.Image, detection models.Detection) (
 	return resp.Embedding.Values, nil
 }
 
-// checkLiveness performs liveness detection using gRPC client
-func (e *Engine) checkLiveness(img image.Image, detection models.Detection) (bool, error) {
+// CheckLiveness performs liveness detection using gRPC client
+func (e *Engine) CheckLiveness(img image.Image, detection models.Detection) (bool, error) {
 	if e.inferenceClient == nil {
 		return true, nil
 	}
 
 	// Convert to RGB for JPEG encoding (IR cameras output grayscale)
-	rgbImg := convertToRGB(img)
+	rgbImg := EnhanceImage(img)
 
 	// Encode image as JPEG
 	var buf bytes.Buffer
@@ -655,28 +885,8 @@ func (e *Engine) checkLiveness(img image.Image, detection models.Detection) (boo
 	return resp.IsLive, nil
 }
 
-// performChallenge performs challenge-response
-func (e *Engine) performChallenge(ctx context.Context, initialDetection models.Detection) (bool, error) {
-	if e.challengeSystem == nil {
-		return true, nil
-	}
-
-	// Generate challenge
-	challenge := e.challengeSystem.GenerateChallenge()
-	e.logger.Infof("Challenge: %s", challenge.Description)
-
-	// Wait for challenge completion
-	timeout := time.Duration(e.config.Challenge.TimeoutSeconds) * time.Second
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	completed := e.challengeSystem.WaitForChallenge(timeoutCtx, challenge, e.camera, initialDetection)
-
-	return completed, nil
-}
-
-// extractRegion extracts a region from an image
-func (e *Engine) extractRegion(img image.Image, detection models.Detection) image.Image {
+// ExtractRegion extracts a region from an image
+func (e *Engine) ExtractRegion(img image.Image, detection models.Detection) image.Image {
 	bounds := img.Bounds()
 	x1 := int(detection.X1)
 	y1 := int(detection.Y1)
@@ -712,6 +922,23 @@ func (e *Engine) extractRegion(img image.Image, detection models.Detection) imag
 	return region
 }
 
+// GetFrame returns the next frame from the camera
+func (e *Engine) GetFrame(preferIR bool) (*camera.Frame, bool) {
+	if preferIR && e.irCamera != nil {
+		return e.irCamera.GetFrame()
+	}
+	if e.camera == nil {
+		return nil, false
+	}
+	return e.camera.GetFrame()
+}
+
+// IsStarted returns true if the camera is currently capturing
+func (e *Engine) IsStarted() bool {
+	// Simple check, in a more complex system we might track state more formally
+	return e.camera != nil
+}
+
 // TriggerIR attempts to trigger the IR emitter
 func (e *Engine) TriggerIR() error {
 	if e.camera == nil {
@@ -726,6 +953,32 @@ func (e *Engine) EnrollUser(username string, numSamples int, debugDir string) (*
 
 	e.logger.Infof("Starting enrollment for user: %s", username)
 
+	// Initialize enrollment
+	if err := e.initializeEnrollment(debugDir); err != nil {
+		return nil, err
+	}
+
+	// Collect samples
+	for i := 0; i < numSamples; i++ {
+		embedding, err := e.captureSampleForEnrollment(i, numSamples, debugDir)
+		if err != nil {
+			return nil, err
+		}
+		embeddings = append(embeddings, embedding)
+	}
+
+	// Create user
+	user, err := e.embeddingStore.CreateUser(username, embeddings)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	e.logger.Infof("User %s enrolled successfully with %d samples", username, numSamples)
+	return user, nil
+}
+
+// initializeEnrollment prepares the system for user enrollment
+func (e *Engine) initializeEnrollment(debugDir string) error {
 	// Trigger IR explicitly before enrollment sequence
 	if err := e.TriggerIR(); err != nil {
 		e.logger.Debugf("Manual IR trigger failed: %v", err)
@@ -738,114 +991,144 @@ func (e *Engine) EnrollUser(username string, numSamples int, debugDir string) (*
 		}
 	}
 
-	for i := 0; i < numSamples; i++ {
-		// Periodically re-trigger IR to ensure it stays on
-		if i > 0 {
-			_ = e.TriggerIR()
-		}
+	return nil
+}
 
-		e.logger.Infof("Capturing sample %d/%d...", i+1, numSamples)
-
-		// Wait for stable frame
-		time.Sleep(500 * time.Millisecond)
-
-		// Capture frame
-		frame, ok := e.camera.GetFrame()
-		if !ok {
-			return nil, fmt.Errorf("failed to capture frame %d", i+1)
-		}
-
-		// Convert to image
-		img, err := frame.ToImage()
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert frame %d: %w", i+1, err)
-		}
-
-		// Enhance image (Auto-Contrast) for IR visibility
-		// We do this here so we can save the debug image exactly as the detector sees it
-		enhancedImg := convertToRGB(img)
-
-		// Save debug image
-		if debugDir != "" {
-			filename := filepath.Join(debugDir, fmt.Sprintf("sample_%d.jpg", i+1))
-			f, err := os.Create(filename)
-			if err != nil {
-				e.logger.Warnf("Failed to create debug image %s: %v", filename, err)
-			} else {
-				if err := jpeg.Encode(f, enhancedImg, &jpeg.Options{Quality: 90}); err != nil {
-					e.logger.Warnf("Failed to encode debug image %s: %v", filename, err)
-				}
-				_ = f.Close()
-				e.logger.Infof("Saved debug image: %s", filename)
-			}
-		}
-
-		// Detect face using enhanced image
-		detections, err := e.detectFaces(enhancedImg)
-		if err != nil {
-			return nil, fmt.Errorf("face detection failed on sample %d: %w", i+1, err)
-		}
-
-		if len(detections) == 0 {
-			e.logger.Warnf("No face detected in sample %d, attempting IR re-trigger and retry...", i+1)
-
-			// Try one more time with forced IR trigger if detection failed
-			_ = e.TriggerIR()
-			// Increased wait time for emitter to stabilize
-			time.Sleep(500 * time.Millisecond)
-
-			// Recapture
-			if frame2, ok := e.camera.GetFrame(); ok {
-				if img2, err := frame2.ToImage(); err == nil {
-					// Enhance retry frame
-					enhancedImg2 := convertToRGB(img2)
-
-					detections2, err := e.detectFaces(enhancedImg2)
-					if err == nil && len(detections2) > 0 {
-						e.logger.Infof("Recovered face detection after IR re-trigger")
-						enhancedImg = enhancedImg2
-						detections = detections2
-
-						// Save recovered debug image
-						if debugDir != "" {
-							filename := filepath.Join(debugDir, fmt.Sprintf("sample_%d_recovered.jpg", i+1))
-							f, err := os.Create(filename)
-							if err == nil {
-								_ = jpeg.Encode(f, enhancedImg, &jpeg.Options{Quality: 90})
-								_ = f.Close()
-							}
-						}
-					}
-				}
-			}
-
-			if len(detections) == 0 {
-				return nil, fmt.Errorf("no face detected in sample %d (check camera/IR)", i+1)
-			}
-		}
-
-		if len(detections) > 1 {
-			return nil, fmt.Errorf("multiple faces detected in sample %d", i+1)
-		}
-
-		// Extract embedding using the valid detection and enhanced image
-		embedding, err := e.extractEmbedding(enhancedImg, detections[0])
-		if err != nil {
-			return nil, fmt.Errorf("failed to extract embedding from sample %d: %w", i+1, err)
-		}
-
-		embeddings = append(embeddings, embedding)
+// captureSampleForEnrollment captures and processes a single enrollment sample
+func (e *Engine) captureSampleForEnrollment(sampleNum, totalSamples int, debugDir string) ([]float32, error) {
+	// Periodically re-trigger IR to ensure it stays on
+	if sampleNum > 0 {
+		_ = e.TriggerIR()
 	}
 
-	// Create user
-	user, err := e.embeddingStore.CreateUser(username, embeddings)
+	e.logger.Infof("Capturing sample %d/%d...", sampleNum+1, totalSamples)
+
+	// Wait for stable frame
+	time.Sleep(500 * time.Millisecond)
+
+	// Capture and enhance frame
+	img, err := e.captureAndEnhanceFrame(sampleNum + 1)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, err
 	}
 
-	e.logger.Infof("User %s enrolled successfully with %d samples", username, numSamples)
+	// Save debug image
+	if debugDir != "" {
+		e.saveDebugImage(img, debugDir, sampleNum+1, "sample")
+	}
 
-	return user, nil
+	// Detect faces with retry logic
+	detections, enhancedImg, err := e.detectFaceWithRetry(img, sampleNum+1, debugDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract embedding
+	embedding, err := e.ExtractEmbedding(enhancedImg, detections[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract embedding from sample %d: %w", sampleNum+1, err)
+	}
+
+	return embedding, nil
+}
+
+// captureAndEnhanceFrame captures and enhances a single frame
+func (e *Engine) captureAndEnhanceFrame(sampleNum int) (image.Image, error) {
+	frame, ok := e.camera.GetFrame()
+	if !ok {
+		return nil, fmt.Errorf("failed to capture frame %d", sampleNum)
+	}
+
+	img, err := frame.ToImage()
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert frame %d: %w", sampleNum, err)
+	}
+
+	// Enhance image for IR visibility
+	return EnhanceImage(img), nil
+}
+
+// saveDebugImage saves an image for debugging purposes
+func (e *Engine) saveDebugImage(img image.Image, debugDir string, sampleNum int, prefix string) {
+	filename := filepath.Join(debugDir, fmt.Sprintf("%s_%d.jpg", prefix, sampleNum))
+	f, err := os.Create(filename)
+	if err != nil {
+		e.logger.Warnf("Failed to create debug image %s: %v", filename, err)
+		return
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			e.logger.Warnf("Failed to close debug image file %s: %v", filename, err)
+		}
+	}()
+
+	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: 90}); err != nil {
+		e.logger.Warnf("Failed to encode debug image %s: %v", filename, err)
+		return
+	}
+
+	e.logger.Infof("Saved debug image: %s", filename)
+}
+
+// detectFaceWithRetry detects faces with retry logic using IR trigger
+func (e *Engine) detectFaceWithRetry(img image.Image, sampleNum int, debugDir string) ([]models.Detection, image.Image, error) {
+	detections, err := e.DetectFaces(img)
+	if err != nil {
+		return nil, nil, fmt.Errorf("face detection failed on sample %d: %w", sampleNum, err)
+	}
+
+	// If no face detected, try one more time with forced IR trigger
+	if len(detections) == 0 {
+		e.logger.Warnf("No face detected in sample %d, attempting IR re-trigger and retry...", sampleNum)
+
+		retryImg, retryDetections, err := e.retryFaceDetection(sampleNum, debugDir)
+		if err == nil && len(retryDetections) > 0 {
+			e.logger.Infof("Recovered face detection after IR re-trigger")
+			return retryDetections, retryImg, nil
+		}
+
+		return nil, nil, fmt.Errorf("no face detected in sample %d (check camera/IR)", sampleNum)
+	}
+
+	if len(detections) > 1 {
+		return nil, nil, fmt.Errorf("multiple faces detected in sample %d", sampleNum)
+	}
+
+	return detections, img, nil
+}
+
+// retryFaceDetection performs a retry attempt for face detection with IR trigger
+func (e *Engine) retryFaceDetection(sampleNum int, debugDir string) (image.Image, []models.Detection, error) {
+	// Try one more time with forced IR trigger if detection failed
+	_ = e.TriggerIR()
+	// Increased wait time for emitter to stabilize
+	time.Sleep(500 * time.Millisecond)
+
+	// Recapture
+	frame2, ok := e.camera.GetFrame()
+	if !ok {
+		return nil, nil, fmt.Errorf("failed to capture retry frame")
+	}
+
+	img2, err := frame2.ToImage()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to convert retry frame: %w", err)
+	}
+
+	// Enhance retry frame
+	enhancedImg2 := EnhanceImage(img2)
+
+	detections2, err := e.DetectFaces(enhancedImg2)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Save recovered debug image
+	if debugDir != "" && len(detections2) > 0 {
+		e.saveDebugImage(enhancedImg2, debugDir, sampleNum, "sample_recovered")
+	}
+
+	return enhancedImg2, detections2, nil
 }
 
 // DeleteUser deletes a user

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FaceLock Inference Service
+LinuxHello Inference Service
 Provides face detection and recognition via gRPC
 Supports ROCm, DirectML, and CPU execution
 """
@@ -558,7 +558,7 @@ def serve(host: str = "localhost", port: int = 50051,
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="FaceLock Inference Service")
+    parser = argparse.ArgumentParser(description="LinuxHello Inference Service")
     parser.add_argument("--host", default="localhost", help="Host to bind to")
     parser.add_argument("--port", type=int, default=50051, help="Port to bind to")
     parser.add_argument("--detector", default="../models/scrfd_person_2.5g.onnx",

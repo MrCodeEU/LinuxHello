@@ -1,5 +1,5 @@
 #!/bin/bash
-# FaceLock Installation Script
+# LinuxHello Installation Script
 # Supports Fedora, RHEL, Ubuntu, Debian
 
 set -e
@@ -38,7 +38,7 @@ detect_distro() {
 
 DISTRO=$(detect_distro)
 
-echo -e "${GREEN}FaceLock Installation Script${NC}"
+echo -e "${GREEN}LinuxHello Installation Script${NC}"
 echo "=============================="
 echo "Detected distribution: $DISTRO"
 echo ""
@@ -106,14 +106,14 @@ install_dependencies() {
 download_models() {
     echo -e "${YELLOW}Downloading ONNX models...${NC}"
     
-    MODEL_DIR="$DATADIR/facelock/models"
+    MODEL_DIR="$DATADIR/linuxhello/models"
     mkdir -p "$MODEL_DIR"
     
     # Model URLs (these would be actual download URLs)
     # For now, we'll create placeholder instructions
     
     cat > "$MODEL_DIR/README.txt" << 'EOF'
-FaceLock ONNX Models
+LinuxHello ONNX Models
 ====================
 
 Please download the following models and place them in this directory:
@@ -161,7 +161,7 @@ EOF
 
 # Build the project
 build_project() {
-    echo -e "${YELLOW}Building FaceLock...${NC}"
+    echo -e "${YELLOW}Building LinuxHello...${NC}"
     
     cd "$PROJECT_ROOT"
     
@@ -169,54 +169,54 @@ build_project() {
     go mod download
     
     # Build binaries
-    go build -o bin/facelock ./cmd/facelock
-    go build -o bin/facelock-enroll ./cmd/facelock-enroll
-    go build -o bin/facelock-test ./cmd/facelock-test
+    go build -o bin/linuxhello ./cmd/linuxhello
+    go build -o bin/linuxhello-enroll ./cmd/linuxhello-enroll
+    go build -o bin/linuxhello-test ./cmd/linuxhello-test
     
     # Build PAM module (requires CGO)
     CGO_CFLAGS="-I/usr/include" \
     CGO_LDFLAGS="-lpam -lpam_misc" \
-    go build -buildmode=c-shared -o bin/pam_facelock.so ./pkg/pam
+    go build -buildmode=c-shared -o bin/pam_linuxhello.so ./pkg/pam
     
     echo -e "${GREEN}Build complete.${NC}"
 }
 
 # Install files
 install_files() {
-    echo -e "${YELLOW}Installing FaceLock...${NC}"
+    echo -e "${YELLOW}Installing LinuxHello...${NC}"
     
     # Create directories
     mkdir -p "$BINDIR"
     mkdir -p "$PAMDIR"
-    mkdir -p "$SYSCONFDIR/facelock"
-    mkdir -p "$DATADIR/facelock/models"
-    mkdir -p "/var/lib/facelock"
+    mkdir -p "$SYSCONFDIR/linuxhello"
+    mkdir -p "$DATADIR/linuxhello/models"
+    mkdir -p "/var/lib/linuxhello"
     mkdir -p "/var/log"
     
     # Install binaries
-    install -m 755 "$PROJECT_ROOT/bin/facelock" "$BINDIR/"
-    install -m 755 "$PROJECT_ROOT/bin/facelock-enroll" "$BINDIR/"
-    install -m 755 "$PROJECT_ROOT/bin/facelock-test" "$BINDIR/"
+    install -m 755 "$PROJECT_ROOT/bin/linuxhello" "$BINDIR/"
+    install -m 755 "$PROJECT_ROOT/bin/linuxhello-enroll" "$BINDIR/"
+    install -m 755 "$PROJECT_ROOT/bin/linuxhello-test" "$BINDIR/"
     
     # Install PAM module
-    install -m 755 "$PROJECT_ROOT/bin/pam_facelock.so" "$PAMDIR/"
+    install -m 755 "$PROJECT_ROOT/bin/pam_linuxhello.so" "$PAMDIR/"
     
     # Install configuration
-    if [ ! -f "$SYSCONFDIR/facelock/facelock.conf" ]; then
-        install -m 644 "$PROJECT_ROOT/configs/facelock.conf" "$SYSCONFDIR/facelock/"
+    if [ ! -f "$SYSCONFDIR/linuxhello/linuxhello.conf" ]; then
+        install -m 644 "$PROJECT_ROOT/configs/linuxhello.conf" "$SYSCONFDIR/linuxhello/"
     else
         echo -e "${YELLOW}Configuration file already exists, not overwriting.${NC}"
     fi
     
     # Install PAM configuration example
-    install -m 644 "$PROJECT_ROOT/configs/pam/common-auth-facelock" "$SYSCONFDIR/facelock/"
+    install -m 644 "$PROJECT_ROOT/configs/pam/common-auth-linuxhello" "$SYSCONFDIR/linuxhello/"
     
     # Set permissions
-    chmod 755 "/var/lib/facelock"
+    chmod 755 "/var/lib/linuxhello"
     
     # Create log file if it doesn't exist
-    touch "/var/log/facelock.log"
-    chmod 644 "/var/log/facelock.log"
+    touch "/var/log/linuxhello.log"
+    chmod 644 "/var/log/linuxhello.log"
     
     echo -e "${GREEN}Installation complete.${NC}"
 }
@@ -226,66 +226,66 @@ setup_permissions() {
     echo -e "${YELLOW}Setting up permissions...${NC}"
     
     # Add video group for camera access
-    echo "To use FaceLock, users need to be in the 'video' group."
+    echo "To use LinuxHello, users need to be in the 'video' group."
     echo "Run: sudo usermod -a -G video <username>"
     echo ""
     
     # Set capabilities for PAM module (optional, for better performance)
     if command -v setcap &> /dev/null; then
-        setcap cap_sys_admin+ep "$BINDIR/facelock" 2>/dev/null || true
+        setcap cap_sys_admin+ep "$BINDIR/linuxhello" 2>/dev/null || true
     fi
 }
 
 # Print post-installation instructions
 print_instructions() {
     echo ""
-    echo -e "${GREEN}FaceLock Installation Complete!${NC}"
+    echo -e "${GREEN}LinuxHello Installation Complete!${NC}"
     echo "================================"
     echo ""
     echo "Next steps:"
     echo ""
     echo "1. Download ONNX models:"
-    echo "   cat $DATADIR/facelock/models/README.txt"
+    echo "   cat $DATADIR/linuxhello/models/README.txt"
     echo ""
     echo "2. Add your user to the video group:"
     echo "   sudo usermod -a -G video \$USER"
     echo "   (Log out and back in for changes to take effect)"
     echo ""
     echo "3. Enroll your face:"
-    echo "   facelock-enroll -user \$USER"
+    echo "   linuxhello-enroll -user \$USER"
     echo ""
     echo "4. Test authentication:"
-    echo "   facelock-test"
+    echo "   linuxhello-test"
     echo ""
     echo "5. Enable PAM integration (optional):"
     echo "   Edit /etc/pam.d/common-auth or /etc/pam.d/system-auth"
-    echo "   Add: auth sufficient pam_facelock.so"
-    echo "   See: $SYSCONFDIR/facelock/common-auth-facelock"
+    echo "   Add: auth sufficient pam_linuxhello.so"
+    echo "   See: $SYSCONFDIR/linuxhello/common-auth-linuxhello"
     echo ""
     echo "6. Configuration file:"
-    echo "   $SYSCONFDIR/facelock/facelock.conf"
+    echo "   $SYSCONFDIR/linuxhello/linuxhello.conf"
     echo ""
     echo -e "${YELLOW}Warning: Test thoroughly before enabling PAM integration!${NC}"
     echo "A misconfigured PAM can lock you out of your system."
     echo ""
-    echo "For help: facelock-enroll -help"
-    echo "For issues: https://github.com/facelock/facelock/issues"
+    echo "For help: linuxhello-enroll -help"
+    echo "For issues: https://github.com/linuxhello/linuxhello/issues"
 }
 
 # Uninstall function
 uninstall() {
-    echo -e "${YELLOW}Uninstalling FaceLock...${NC}"
+    echo -e "${YELLOW}Uninstalling LinuxHello...${NC}"
     
-    rm -f "$BINDIR/facelock"
-    rm -f "$BINDIR/facelock-enroll"
-    rm -f "$BINDIR/facelock-test"
-    rm -f "$PAMDIR/pam_facelock.so"
+    rm -f "$BINDIR/linuxhello"
+    rm -f "$BINDIR/linuxhello-enroll"
+    rm -f "$BINDIR/linuxhello-test"
+    rm -f "$PAMDIR/pam_linuxhello.so"
     
     echo -e "${YELLOW}Note: Configuration files and data were not removed.${NC}"
     echo "To remove all data, run:"
-    echo "  sudo rm -rf $SYSCONFDIR/facelock"
-    echo "  sudo rm -rf /var/lib/facelock"
-    echo "  sudo rm -rf $DATADIR/facelock"
+    echo "  sudo rm -rf $SYSCONFDIR/linuxhello"
+    echo "  sudo rm -rf /var/lib/linuxhello"
+    echo "  sudo rm -rf $DATADIR/linuxhello"
     
     echo -e "${GREEN}Uninstall complete.${NC}"
 }
@@ -300,17 +300,17 @@ main() {
             exit 0
             ;;
         --help|-h)
-            echo "FaceLock Installation Script"
+            echo "LinuxHello Installation Script"
             echo ""
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --help, -h       Show this help message"
-            echo "  --uninstall, -u  Uninstall FaceLock"
+            echo "  --uninstall, -u  Uninstall LinuxHello"
             echo ""
             echo "Examples:"
-            echo "  sudo $0          Install FaceLock"
-            echo "  sudo $0 -u       Uninstall FaceLock"
+            echo "  sudo $0          Install LinuxHello"
+            echo "  sudo $0 -u       Uninstall LinuxHello"
             exit 0
             ;;
     esac

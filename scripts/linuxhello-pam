@@ -22,9 +22,29 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Paths
-BACKUP_DIR="/var/lib/facelock/pam-backups"
-PAM_MODULE="/usr/local/lib/security/pam_facelock.so"
+BACKUP_DIR="/var/lib/linuxhello/pam-backups"
+PAM_MODULE="/usr/local/lib/security/pam_linuxhello.so"
+# Also check system PAM directories
+SYSTEM_PAM_DIRS="/lib64/security /lib/x86_64-linux-gnu/security /lib/security /usr/lib/security"
 FACELOCK_MARKER="# LinuxHello face authentication"
+
+# Find the actual PAM module location
+find_pam_module() {
+    # First check our install location
+    if [ -f "$PAM_MODULE" ]; then
+        echo "$PAM_MODULE"
+        return
+    fi
+    # Check system PAM directories
+    for dir in $SYSTEM_PAM_DIRS; do
+        if [ -f "$dir/pam_linuxhello.so" ]; then
+            echo "$dir/pam_linuxhello.so"
+            return
+        fi
+    done
+    # Not found
+    echo ""
+}
 
 # Service configurations
 # Format: "service_name:pam_file:insert_position"
@@ -95,11 +115,14 @@ check_root() {
 check_prerequisites() {
     local errors=0
 
-    # Check if PAM module exists
-    if [ ! -f "$PAM_MODULE" ]; then
-        print_warning "PAM module not found at $PAM_MODULE"
-        echo "         Run 'make install' to install the PAM module"
+    # Check if PAM module exists anywhere
+    local module_path=$(find_pam_module)
+    if [ -z "$module_path" ]; then
+        print_warning "PAM module not found!"
+        echo "         Run 'sudo make install' to install the PAM module"
         errors=$((errors + 1))
+    else
+        print_success "PAM module found at: $module_path"
     fi
 
     # Check if facelock binaries exist
@@ -111,7 +134,7 @@ check_prerequisites() {
     fi
 
     # Check if user is enrolled
-    if [ ! -d "/var/lib/facelock" ] && [ ! -d "$HOME/.local/share/facelock" ]; then
+    if [ ! -d "/var/lib/linuxhello" ] && [ ! -d "$HOME/.local/share/facelock" ]; then
         print_warning "No enrollment data found. Enroll first with: facelock-enroll -user \$USER"
         errors=$((errors + 1))
     fi
@@ -149,15 +172,36 @@ is_enabled() {
     return 1
 }
 
+# Check if the PAM config needs updating (has bare module name without full path)
+needs_path_update() {
+    local pam_file="$1"
+    if [ -f "$pam_file" ] && grep -q "pam_linuxhello.so" "$pam_file"; then
+        # Check if it's using bare name (not full path)
+        if grep "pam_linuxhello.so" "$pam_file" | grep -q "^auth.*sufficient.*pam_linuxhello.so$"; then
+            return 0  # Needs update
+        fi
+    fi
+    return 1  # Doesn't need update
+}
+
 # Get PAM line to insert
 get_pam_line() {
+    local module_path=$(find_pam_module)
     echo "$FACELOCK_MARKER"
-    echo "auth        sufficient    pam_facelock.so"
+    # Use full path to be safe, as /usr/local/lib/security might not be in PAM search path
+    if [ -n "$module_path" ]; then
+        echo "auth        sufficient    $module_path"
+    else
+        # Fallback to name if file not found anywhere
+        print_warning "PAM module not found! Using bare name (may not work)"
+        echo "auth        sufficient    pam_linuxhello.so"
+    fi
 }
 
 # Enable face auth for a service
 enable_service() {
     local service="$1"
+    local force_yes="$2"
     
     if [ -z "${SERVICES[$service]}" ]; then
         print_error "Unknown service: $service"
@@ -178,74 +222,66 @@ enable_service() {
         return 0
     fi
     
-    echo ""
-    print_warning "You are about to modify: $pam_file"
-    echo ""
-    echo "This will add face authentication as a PRIMARY method."
-    echo "If face auth succeeds, password will be skipped."
-    echo "If face auth fails, password will be required as fallback."
-    echo ""
-    
-    # Show what will be added
-    echo "The following lines will be added to the TOP of $pam_file:"
-    echo "─────────────────────────────────────────────────────────"
-    echo -e "${GREEN}$FACELOCK_MARKER${NC}"
-    echo -e "${GREEN}auth        sufficient    pam_facelock.so${NC}"
-    echo "─────────────────────────────────────────────────────────"
-    echo ""
-    
-    # Safety warning
-    echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║  IMPORTANT: Keep another terminal open as root!            ║${NC}"
-    echo -e "${RED}║  If something goes wrong, you can restore with:            ║${NC}"
-    echo -e "${RED}║    sudo $0 restore $service              ║${NC}"
-    echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    
-    read -p "Do you want to continue? [y/N] " -n 1 -r
-    echo
-    
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_info "Aborted"
-        return 0
+    if [ "$force_yes" != "yes" ]; then
+        echo ""
+        print_warning "You are about to modify: $pam_file"
+        echo ""
+        echo "This will add face authentication as a PRIMARY method."
+        echo "If face auth succeeds, password will be skipped."
+        echo "If face auth fails, password will be required as fallback."
+        echo ""
+        
+        # Show what will be added
+        echo "The following lines will be added to the TOP of $pam_file:"
+        echo "─────────────────────────────────────────────────────────"
+        echo -e "${GREEN}$(get_pam_line)${NC}"
+        echo "─────────────────────────────────────────────────────────"
+        echo ""
+        
+        # Safety warning
+        echo -e "${RED}╔════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║  IMPORTANT: Keep another terminal open as root!            ║${NC}"
+        echo -e "${RED}║  If something goes wrong, you can restore with:            ║${NC}"
+        echo -e "${RED}║    sudo $0 restore $service              ║${NC}"
+        echo -e "${RED}╚════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        
+        read -p "Do you want to continue? [y/N] " -n 1 -r
+        echo
+        
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Aborted"
+            return 0
+        fi
     fi
     
     # Create backup
     backup_pam_file "$pam_file" "$service" || return 1
     
-    # Insert LinuxHello lines at top (after any initial comments)
-    # Find first non-comment, non-empty line
+    # Insert LinuxHello lines at top
     local temp_file=$(mktemp)
     local inserted=0
     
+    # Get lines to insert
+    local pam_lines=$(get_pam_line)
+    
     while IFS= read -r line || [ -n "$line" ]; do
         if [ $inserted -eq 0 ] && [[ ! "$line" =~ ^[[:space:]]*# ]] && [[ -n "$line" ]]; then
-            # Insert our lines before first actual PAM rule
-            echo "$FACELOCK_MARKER" >> "$temp_file"
-            echo "auth        sufficient    pam_facelock.so" >> "$temp_file"
+            echo "$pam_lines" >> "$temp_file"
             echo "" >> "$temp_file"
             inserted=1
         fi
         echo "$line" >> "$temp_file"
     done < "$pam_file"
     
-    # If file was all comments or empty, append at end
     if [ $inserted -eq 0 ]; then
-        echo "$FACELOCK_MARKER" >> "$temp_file"
-        echo "auth        sufficient    pam_facelock.so" >> "$temp_file"
+        echo "$pam_lines" >> "$temp_file"
     fi
     
-    # Replace original file
     mv "$temp_file" "$pam_file"
     chmod 644 "$pam_file"
     
     print_success "LinuxHello enabled for $service"
-    echo ""
-    print_info "Test with: sudo -k && sudo echo 'Face auth works!'"
-    echo ""
-    print_warning "If you get locked out, restore with:"
-    echo "         sudo $0 restore $service"
-    echo "    OR   sudo cp $BACKUP_DIR/${service}_latest.backup $pam_file"
 }
 
 # Disable face auth for a service
@@ -281,7 +317,7 @@ disable_service() {
             skip_next=1
             continue
         fi
-        if [ $skip_next -eq 1 ] && [[ "$line" == *"pam_facelock.so"* ]]; then
+        if [ $skip_next -eq 1 ] && [[ "$line" == *"pam_linuxhello.so"* ]]; then
             skip_next=0
             continue
         fi
@@ -342,7 +378,7 @@ show_status() {
     echo "PAM Integration Status"
     echo "═══════════════════════════════════════════════════════════"
     echo ""
-    printf "%-15s %-35s %s\n" "SERVICE" "PAM FILE" "STATUS"
+    printf "% -15s % -35s %s\n" "SERVICE" "PAM FILE" "STATUS"
     echo "───────────────────────────────────────────────────────────"
     
     for service in "${!SERVICES[@]}"; do
@@ -357,7 +393,7 @@ show_status() {
             status="disabled"
         fi
         
-        printf "%-15s %-35s %b\n" "$service" "$pam_file" "$status"
+        printf "% -15s % -35s %b\n" "$service" "$pam_file" "$status"
     done
     
     echo ""
@@ -385,18 +421,18 @@ list_services() {
     echo ""
     echo "Available services for LinuxHello PAM integration:"
     echo ""
-    printf "%-15s %s\n" "SERVICE" "DESCRIPTION"
+    printf "% -15s %s\n" "SERVICE" "DESCRIPTION"
     echo "───────────────────────────────────────────────────────────"
-    printf "%-15s %s\n" "sudo" "Privilege escalation (recommended first)"
-    printf "%-15s %s\n" "su" "Switch user command"
-    printf "%-15s %s\n" "polkit" "PolicyKit authentication dialogs"
-    printf "%-15s %s\n" "sddm" "KDE/Plasma login screen"
-    printf "%-15s %s\n" "gdm" "GNOME login screen"
-    printf "%-15s %s\n" "lightdm" "LightDM login screen"
-    printf "%-15s %s\n" "login" "TTY/console login"
-    printf "%-15s %s\n" "kde" "KDE-specific auth (screen lock)"
-    printf "%-15s %s\n" "system-auth" "Fedora/RHEL system-wide (advanced)"
-    printf "%-15s %s\n" "common-auth" "Debian/Ubuntu system-wide (advanced)"
+    printf "% -15s %s\n" "sudo" "Privilege escalation (recommended first)"
+    printf "% -15s %s\n" "su" "Switch user command"
+    printf "% -15s %s\n" "polkit" "PolicyKit authentication dialogs"
+    printf "% -15s %s\n" "sddm" "KDE/Plasma login screen"
+    printf "% -15s %s\n" "gdm" "GNOME login screen"
+    printf "% -15s %s\n" "lightdm" "LightDM login screen"
+    printf "% -15s %s\n" "login" "TTY/console login"
+    printf "% -15s %s\n" "kde" "KDE-specific auth (screen lock)"
+    printf "% -15s %s\n" "system-auth" "Fedora/RHEL system-wide (advanced)"
+    printf "% -15s %s\n" "common-auth" "Debian/Ubuntu system-wide (advanced)"
     echo ""
     print_warning "Start with 'sudo' to test safely before enabling login screens!"
     echo ""
@@ -479,52 +515,65 @@ show_help() {
 
 # Main
 main() {
-    case "${1:-help}" in
+    local force_yes="no"
+    local command="$1"
+    shift || true
+
+    # Parse flags
+    while [[ "$#" -gt 0 ]]; do
+        case $1 in
+            -y|--yes) force_yes="yes" ;; 
+            *) break ;; 
+        esac
+        shift
+    done
+
+    case "$command" in
         status)
             print_header
             show_status
-            ;;
+            ;; 
         enable)
             check_root
             print_header
-            if [ -z "$2" ]; then
+            if [ -z "$1" ]; then
                 print_error "Please specify a service"
                 echo "Usage: $0 enable <service>"
                 list_services
                 exit 1
             fi
-            enable_service "$2"
-            ;;
+            enable_service "$1" "$force_yes"
+            ;; 
         disable)
             check_root
             print_header
-            if [ -z "$2" ]; then
+            if [ -z "$1" ]; then
                 print_error "Please specify a service"
                 exit 1
             fi
-            disable_service "$2"
-            ;;
+            disable_service "$1"
+            ;; 
         restore)
             check_root
             print_header
-            restore_service "$2"
-            ;;
+            restore_service "$1"
+            ;; 
         test)
             print_header
             test_auth
-            ;;
+            ;; 
         list)
             print_header
             list_services
-            ;;
+            ;; 
         help|--help|-h)
             show_help
-            ;;
+            ;; 
         *)
             print_error "Unknown command: $1"
             show_help
             exit 1
-            ;;
+            ;; 
     esac
 }
 

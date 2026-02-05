@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=LinuxHello
+Comment=Face Authentication Management
+Exec=/usr/bin/xdg-open http://localhost:8080
+Icon=/usr/share/linuxhello/icons/linuxhello-icon-64.png
+Terminal=false
+Categories=Settings;System;Security;
+MimeType=
+Keywords=face;authentication;login;security;biometric;
+StartupNotify=true

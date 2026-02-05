@@ -1,20 +1,20 @@
-# PAM configuration for FaceLock
+# PAM configuration for LinuxHello
 # Add this to your PAM configuration to enable face authentication
 #
 # Example usage in /etc/pam.d/common-auth (Debian/Ubuntu) or
 # /etc/pam.d/system-auth (Fedora/RHEL):
 #
-#   auth    sufficient      pam_facelock.so
+#   auth    sufficient      pam_linuxhello.so
 #   auth    required        pam_unix.so try_first_pass
 #
 # Or for sudo:
 #
-#   auth    sufficient      pam_facelock.so
+#   auth    sufficient      pam_linuxhello.so
 #   auth    include         system-auth
 
-# FaceLock authentication module
+# LinuxHello authentication module
 # Place this BEFORE other authentication methods to try face first
-auth    sufficient      pam_facelock.so
+auth    sufficient      pam_linuxhello.so
 
 # Fallback to standard Unix authentication
 auth    required        pam_unix.so try_first_pass nullok

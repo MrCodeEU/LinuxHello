@@ -1,9 +1,9 @@
 #!/bin/bash
-# Setup script for FaceLock hybrid architecture
+# Setup script for LinuxHello hybrid architecture
 
 set -e
 
-echo "FaceLock Hybrid Setup"
+echo "LinuxHello Hybrid Setup"
 echo "===================="
 echo ""
 
@@ -214,8 +214,8 @@ echo "1. Start the Python inference service:"
 echo "   cd python-service && source venv/bin/activate"
 echo "   python3 inference_service.py"
 echo ""
-echo "2. In another terminal, run FaceLock:"
-echo "   make build && ./bin/facelock-enroll -user yourname"
+echo "2. In another terminal, run LinuxHello:"
+echo "   make build && ./bin/linuxhello-enroll -user yourname"
 echo ""
 echo "Or use: make start-service (Terminal 1) && make test-enroll (Terminal 2)"
 echo "===================="

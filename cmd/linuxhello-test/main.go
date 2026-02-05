@@ -1,4 +1,4 @@
-// facelock-test - Test tool for FaceLock authentication
+// facelock-test - Test tool for LinuxHello authentication
 package main
 
 import (
@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/facelock/facelock/internal/auth"
-	"github.com/facelock/facelock/internal/config"
+	"github.com/MrCodeEU/LinuxHello/internal/auth"
+	"github.com/MrCodeEU/LinuxHello/internal/config"
 	"github.com/sirupsen/logrus"
 )
 
@@ -55,7 +55,7 @@ func main() {
 }
 
 func runSingleAuth(cfg *config.Config, username string, logger *logrus.Logger) error {
-	fmt.Println("FaceLock Authentication Test")
+	fmt.Println("LinuxHello Authentication Test")
 	fmt.Println("===========================")
 
 	// Create authentication engine
@@ -185,7 +185,7 @@ type sessionStats struct {
 }
 
 func setupAuthenticationEngine(cfg *config.Config, logger *logrus.Logger) (*auth.Engine, error) {
-	fmt.Println("FaceLock Continuous Authentication Mode")
+	fmt.Println("LinuxHello Continuous Authentication Mode")
 	fmt.Println("=======================================")
 	fmt.Println("Press Ctrl+C to exit")
 

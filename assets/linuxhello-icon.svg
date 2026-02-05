@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="faceGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90E2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#357ABD;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="lockGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2ECC71;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#27AE60;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#faceGradient)" stroke="#2C3E50" stroke-width="2"/>
+  
+  <!-- Face outline -->
+  <ellipse cx="64" cy="54" rx="25" ry="30" fill="none" stroke="#FFFFFF" stroke-width="2.5" opacity="0.9"/>
+  
+  <!-- Eyes -->
+  <circle cx="56" cy="48" r="3" fill="#FFFFFF"/>
+  <circle cx="72" cy="48" r="3" fill="#FFFFFF"/>
+  
+  <!-- Nose -->
+  <path d="M 64 52 L 62 58 L 66 58 Z" fill="#FFFFFF" opacity="0.7"/>
+  
+  <!-- Mouth -->
+  <path d="M 58 64 Q 64 68 70 64" stroke="#FFFFFF" stroke-width="2" fill="none" opacity="0.8"/>
+  
+  <!-- Security lock at bottom right -->
+  <g transform="translate(85, 85)">
+    <!-- Lock body -->
+    <rect x="0" y="8" width="16" height="12" rx="2" fill="url(#lockGradient)" stroke="#1E8449" stroke-width="1"/>
+    <!-- Lock shackle -->
+    <path d="M 4 8 Q 4 2 8 2 Q 12 2 12 8" stroke="url(#lockGradient)" stroke-width="2.5" fill="none"/>
+    <!-- Lock dot -->
+    <circle cx="8" cy="14" r="1.5" fill="#FFFFFF"/>
+  </g>
+  
+  <!-- Scanning lines effect -->
+  <g opacity="0.6">
+    <line x1="30" y1="40" x2="98" y2="40" stroke="#FFFFFF" stroke-width="1" opacity="0.4"/>
+    <line x1="30" y1="50" x2="98" y2="50" stroke="#FFFFFF" stroke-width="1" opacity="0.6"/>
+    <line x1="30" y1="60" x2="98" y2="60" stroke="#FFFFFF" stroke-width="1" opacity="0.4"/>
+    <line x1="30" y1="70" x2="98" y2="70" stroke="#FFFFFF" stroke-width="1" opacity="0.3"/>
+  </g>
+</svg>

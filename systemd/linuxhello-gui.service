@@ -1,0 +1,18 @@
+[Unit]
+Description=LinuxHello Management GUI
+After=network.target linuxhello-inference.service
+
+[Service]
+Type=simple
+User=root
+# The GUI is installed to /usr/local/bin by Makefile
+ExecStart=/usr/local/bin/linuxhello-gui -config /etc/linuxhello/linuxhello.conf
+Restart=on-failure
+RestartSec=5s
+
+# Ensure it can access the camera and PAM
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+
+[Install]
+WantedBy=multi-user.target

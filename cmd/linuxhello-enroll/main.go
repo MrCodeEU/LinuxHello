@@ -1,4 +1,4 @@
-// facelock-enroll - Face enrollment tool for FaceLock
+// facelock-enroll - Face enrollment tool for LinuxHello
 package main
 
 import (
@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/facelock/facelock/internal/auth"
-	"github.com/facelock/facelock/internal/config"
-	"github.com/facelock/facelock/internal/embedding"
+	"github.com/MrCodeEU/LinuxHello/internal/auth"
+	"github.com/MrCodeEU/LinuxHello/internal/config"
+	"github.com/MrCodeEU/LinuxHello/internal/embedding"
 	"github.com/sirupsen/logrus"
 )
 
@@ -83,7 +83,7 @@ func main() {
 }
 
 func enrollUser(cfg *config.Config, username string, numSamples int, debug bool, logger *logrus.Logger) error {
-	fmt.Printf("FaceLock Enrollment\n")
+	fmt.Printf("LinuxHello Enrollment\n")
 	fmt.Printf("===================\n\n")
 	fmt.Printf("User: %s\n", username)
 	fmt.Printf("Samples: %d\n\n", numSamples)

@@ -1,5 +1,5 @@
-// Package pam provides PAM module integration
-package pam
+// Package main provides PAM module integration
+package main
 
 /*
 #cgo LDFLAGS: -lpam -lpam_misc
@@ -7,48 +7,21 @@ package pam
 #include <security/pam_modules.h>
 #include <string.h>
 #include <stdlib.h>
-
-// Forward declaration of Go function
-extern int goAuthenticate(pam_handle_t *pamh, int flags, int argc, char **argv);
-
-// PAM service function that calls Go
-int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) {
-    return goAuthenticate(pamh, flags, argc, (char**)argv);
-}
-
-int pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv) {
-    return PAM_SUCCESS;
-}
-
-int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags, int argc, const char **argv) {
-    return PAM_SUCCESS;
-}
-
-int pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv) {
-    return PAM_SUCCESS;
-}
-
-int pam_sm_close_session(pam_handle_t *pamh, int flags, int argc, const char **argv) {
-    return PAM_SUCCESS;
-}
-
-int pam_sm_chauthtok(pam_handle_t *pamh, int flags, int argc, const char **argv) {
-    return PAM_SERVICE_ERR;
-}
 */
 import "C"
 
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 	"unsafe"
 
-	"github.com/facelock/facelock/internal/auth"
-	"github.com/facelock/facelock/internal/config"
-	"github.com/facelock/facelock/internal/embedding"
+	"github.com/MrCodeEU/LinuxHello/internal/auth"
+	"github.com/MrCodeEU/LinuxHello/internal/config"
+	"github.com/MrCodeEU/LinuxHello/internal/embedding"
 	"github.com/sirupsen/logrus"
 )
 
@@ -57,15 +30,36 @@ var (
 )
 
 func init() {
-	// Initialize logger
+	// Initialize logger with file output for debugging
 	logger = logrus.New()
-	logger.SetLevel(logrus.InfoLevel)
+	logger.SetLevel(logrus.DebugLevel)
+
+	// Try to write to a file for debugging PAM issues
+	f, err := os.OpenFile("/var/log/linuxhello-pam.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		logger.SetOutput(f)
+		logger.WithFields(logrus.Fields{
+			"pid": os.Getpid(),
+			"uid": os.Getuid(),
+			"gid": os.Getgid(),
+		}).Info("PAM module initialized with file logging")
+	} else {
+		logger.WithError(err).Warn("Failed to open PAM log file, using default output")
+	}
 }
 
 //export goAuthenticate
-func goAuthenticate(pamh *C.pam_handle_t, flags C.int, argc C.int, argv **C.char) C.int {
-	// Parse arguments
-	args := parseArgs(argc, argv)
+func goAuthenticate(pamh *C.pam_handle_t, _ C.int, argc C.int, argv **C.char) C.int {
+	// Defensive check for logger
+	if logger == nil {
+		return C.PAM_AUTH_ERR
+	}
+
+	logger.Debug("goAuthenticate called")
+
+	// Parse and validate arguments
+	args := parseArgumentsSafely(argc, argv)
+	logger.Debugf("args parsed: %v", args)
 
 	// Load configuration
 	cfg, err := loadConfig(args)
@@ -74,11 +68,42 @@ func goAuthenticate(pamh *C.pam_handle_t, flags C.int, argc C.int, argv **C.char
 		return C.PAM_AUTH_ERR
 	}
 
-	// Get username from PAM
+	// Get and validate username
+	username, result := getUsernameWithValidation(pamh, cfg)
+	if result != C.PAM_SUCCESS {
+		return result
+	}
+
+	// Initialize authentication system
+	engine, result := initializeAuthEngine(cfg)
+	if result != C.PAM_SUCCESS {
+		return result
+	}
+	defer func() { _ = engine.Close() }()
+
+	// Initialize and start camera
+	if result := setupCamera(engine, cfg); result != C.PAM_SUCCESS {
+		return result
+	}
+
+	// Perform authentication
+	return performAuthentication(engine, cfg, username)
+}
+
+// parseArgumentsSafely safely parses PAM arguments
+func parseArgumentsSafely(argc C.int, argv **C.char) map[string]string {
+	if argc > 0 && argv != nil {
+		return parseArgs(argc, argv)
+	}
+	return make(map[string]string)
+}
+
+// getUsernameWithValidation gets and validates the username
+func getUsernameWithValidation(pamh *C.pam_handle_t, cfg *config.Config) (string, C.int) {
 	username, err := getUser(pamh)
 	if err != nil {
 		logger.Errorf("Failed to get username: %v", err)
-		return C.PAM_AUTH_ERR
+		return "", C.PAM_AUTH_ERR
 	}
 
 	logger.Infof("Authenticating user: %s", username)
@@ -86,43 +111,47 @@ func goAuthenticate(pamh *C.pam_handle_t, flags C.int, argc C.int, argv **C.char
 	// Check if user is enrolled
 	if !isUserEnrolled(cfg, username) {
 		logger.Warnf("User %s not enrolled in facelock", username)
-		// Return success if fallback is enabled, allowing other PAM modules to handle it
 		if cfg.Auth.FallbackEnabled {
-			return C.PAM_IGNORE
+			return "", C.PAM_IGNORE
 		}
-		return C.PAM_USER_UNKNOWN
+		return "", C.PAM_USER_UNKNOWN
 	}
 
-	// Initialize authentication engine
+	return username, C.PAM_SUCCESS
+}
+
+// initializeAuthEngine initializes the authentication engine
+func initializeAuthEngine(cfg *config.Config) (*auth.Engine, C.int) {
 	engine, err := auth.NewEngine(cfg, logger)
 	if err != nil {
 		logger.Errorf("Failed to initialize engine: %v", err)
 		if cfg.Auth.FallbackEnabled {
-			return C.PAM_IGNORE
+			return nil, C.PAM_IGNORE
 		}
-		return C.PAM_AUTH_ERR
+		return nil, C.PAM_AUTH_ERR
 	}
-	defer func() { _ = engine.Close() }()
+	return engine, C.PAM_SUCCESS
+}
 
+// setupCamera initializes and starts the camera
+func setupCamera(engine *auth.Engine, cfg *config.Config) C.int {
 	// Initialize camera
 	if err := engine.InitializeCamera(); err != nil {
 		logger.Errorf("Failed to initialize camera: %v", err)
-		if cfg.Auth.FallbackEnabled {
-			return C.PAM_IGNORE
-		}
-		return C.PAM_AUTH_ERR
+		return fallbackOrError(cfg)
 	}
 
 	// Start capture
 	if err := engine.Start(); err != nil {
 		logger.Errorf("Failed to start camera: %v", err)
-		if cfg.Auth.FallbackEnabled {
-			return C.PAM_IGNORE
-		}
-		return C.PAM_AUTH_ERR
+		return fallbackOrError(cfg)
 	}
 
-	// Perform authentication
+	return C.PAM_SUCCESS
+}
+
+// performAuthentication executes the authentication process
+func performAuthentication(engine *auth.Engine, cfg *config.Config, username string) C.int {
 	ctx, cancel := context.WithTimeout(context.Background(),
 		time.Duration(cfg.Auth.SessionTimeout)*time.Second)
 	defer cancel()
@@ -130,10 +159,7 @@ func goAuthenticate(pamh *C.pam_handle_t, flags C.int, argc C.int, argv **C.char
 	result, err := engine.AuthenticateUser(ctx, username)
 	if err != nil {
 		logger.Errorf("Authentication error: %v", err)
-		if cfg.Auth.FallbackEnabled {
-			return C.PAM_IGNORE
-		}
-		return C.PAM_AUTH_ERR
+		return fallbackOrError(cfg)
 	}
 
 	if result.Success {
@@ -143,12 +169,14 @@ func goAuthenticate(pamh *C.pam_handle_t, flags C.int, argc C.int, argv **C.char
 	}
 
 	logger.Warnf("Authentication failed for user %s: %v", username, result.Error)
+	return fallbackOrError(cfg)
+}
 
-	// Check if we should allow fallback
+// fallbackOrError returns appropriate PAM result based on fallback configuration
+func fallbackOrError(cfg *config.Config) C.int {
 	if cfg.Auth.FallbackEnabled {
 		return C.PAM_IGNORE
 	}
-
 	return C.PAM_AUTH_ERR
 }
 
@@ -234,26 +262,8 @@ func isUserEnrolled(cfg *config.Config, username string) bool {
 	return err == nil
 }
 
-// Helper function for sending messages to user (for future use)
-func sendMessage(pamh *C.pam_handle_t, msg string) error {
-	cMsg := C.CString(msg)
-	defer C.free(unsafe.Pointer(cMsg))
-
-	msgStyle := C.int(C.PAM_TEXT_INFO)
-	pamMsg := C.struct_pam_message{
-		msg_style: msgStyle,
-		msg:       cMsg,
-	}
-
-	// This is a simplified version - full implementation would use pam_conv
-	_ = pamMsg
-
-	return nil
-}
-
-// Helper function for getting user input (for future use)
-func getInput(pamh *C.pam_handle_t, prompt string) (string, error) {
-	// This would use pam_conv to get user input
-	// For now, return empty string
-	return "", nil
+// Main function required for c-shared buildmode
+func main() {
+	// This function is required for buildmode=c-shared but won't be called
+	// The actual PAM functions are exported via CGO
 }

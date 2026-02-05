@@ -6,9 +6,9 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/facelock/facelock/internal/camera"
-	"github.com/facelock/facelock/internal/config"
-	"github.com/facelock/facelock/pkg/models"
+	"github.com/MrCodeEU/LinuxHello/internal/camera"
+	"github.com/MrCodeEU/LinuxHello/internal/config"
+	"github.com/MrCodeEU/LinuxHello/pkg/models"
 )
 
 // ChallengeType represents the type of challenge
@@ -186,7 +186,7 @@ func (cs *ChallengeSystem) detectBlink(
 
 // isEyeOpen checks if an eye is open based on region brightness variance
 // In production, use proper EAR (Eye Aspect Ratio) calculation
-func (cs *ChallengeSystem) isEyeOpen(img interface{}, landmark [2]float32) bool {
+func (cs *ChallengeSystem) isEyeOpen(_ interface{}, _ [2]float32) bool {
 	// Simplified - always return true for PoC
 	// In production:
 	// 1. Extract eye region around landmark
@@ -198,7 +198,7 @@ func (cs *ChallengeSystem) isEyeOpen(img interface{}, landmark [2]float32) bool 
 // detectNod detects head nodding
 func (cs *ChallengeSystem) detectNod(
 	ctx context.Context,
-	cam *camera.Camera,
+	_ *camera.Camera,
 	initialDetection models.Detection,
 ) bool {
 	// Nod detection using vertical movement of face center

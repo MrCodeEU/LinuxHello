@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package facelock.inference;
+package linuxhello.inference;
 
 option go_package = "./api;inference";
 

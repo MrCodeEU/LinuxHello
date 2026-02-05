@@ -1,0 +1,125 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-rpm:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    
+    steps:
+    - name: Install dependencies
+      run: |
+        dnf update -y
+        dnf install -y golang nodejs npm git rpm-build rpmdevtools
+        dnf install -y libv4l-devel pam-devel sqlite-devel systemd-rpm-macros
+        
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up RPM build environment
+      run: |
+        rpmdev-setuptree
+        
+    - name: Get version from tag or commit
+      id: version
+      run: |
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        else
+          VERSION="0.0.0-$(git rev-parse --short HEAD)"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        
+    - name: Create source tarball
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        mkdir -p linuxhello-$VERSION
+        
+        # Copy source files (exclude .git, node_modules, etc)
+        rsync -av --exclude='.git' --exclude='node_modules' --exclude='dist' \
+              --exclude='bin' --exclude='*.tar.gz' ./ linuxhello-$VERSION/
+        
+        # Create tarball
+        tar -czf ~/rpmbuild/SOURCES/linuxhello-$VERSION.tar.gz linuxhello-$VERSION/
+        
+        # Update spec file with version
+        sed -i "s/Version:.*/Version:        $VERSION/" packaging/linuxhello.spec
+        cp packaging/linuxhello.spec ~/rpmbuild/SPECS/
+        
+    - name: Build RPM
+      run: |
+        rpmbuild -ba ~/rpmbuild/SPECS/linuxhello.spec
+        
+    - name: List built packages
+      run: |
+        find ~/rpmbuild -name "*.rpm" -type f
+        
+    - name: Upload RPM artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: rpm-packages
+        path: |
+          ~/rpmbuild/RPMS/**/*.rpm
+          ~/rpmbuild/SRPMS/*.rpm
+          
+  create-release:
+    needs: build-rpm
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: rpm-packages
+        path: packages/
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: packages/**/*.rpm
+        body: |
+          ## LinuxHello Release ${{ github.ref_name }}
+          
+          ### Installation
+          
+          **Fedora/RHEL/Rocky Linux:**
+          ```bash
+          # Download the RPM package
+          wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/linuxhello-*.rpm
+          
+          # Install with dependencies
+          sudo dnf install ./linuxhello-*.rpm
+          
+          # Start services
+          sudo systemctl start linuxhello-inference linuxhello-gui
+          sudo systemctl enable linuxhello-inference linuxhello-gui
+          
+          # Open management GUI
+          firefox http://localhost:8080
+          ```
+          
+          ### Quick Start
+          1. Open the web interface at http://localhost:8080
+          2. Enroll your face in the "Enroll Face" tab
+          3. Enable PAM authentication in the "System & PAM" tab
+          4. Test with `sudo ls` - your face should be recognized!
+          
+          ### What's Included
+          - Face authentication system with PAM integration
+          - Web-based management interface
+          - Support for sudo, login, and other PAM services
+          - AI-powered face detection and recognition
+          - Liveness detection to prevent spoofing
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

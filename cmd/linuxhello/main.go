@@ -10,14 +10,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/facelock/facelock/internal/auth"
-	"github.com/facelock/facelock/internal/config"
+	"github.com/MrCodeEU/LinuxHello/internal/auth"
+	"github.com/MrCodeEU/LinuxHello/internal/config"
 	"github.com/sirupsen/logrus"
 )
 
 func main() {
 	var (
-		configPath = flag.String("config", "/etc/facelock/facelock.conf", "Path to configuration file")
+		configPath = flag.String("config", "/etc/linuxhello/linuxhello.conf", "Path to configuration file")
 		verbose    = flag.Bool("verbose", false, "Enable verbose logging")
 		version    = flag.Bool("version", false, "Show version information")
 		daemon     = flag.Bool("daemon", false, "Run as daemon (background service)")
@@ -52,12 +52,12 @@ func main() {
 
 	// Run daemon or one-shot mode
 	if *daemon {
-		logger.Info("Starting FaceLock daemon...")
+		logger.Info("Starting LinuxHello daemon...")
 		if err := runDaemon(ctx, cfg, logger); err != nil {
 			logger.Fatalf("Daemon error: %v", err)
 		}
 	} else {
-		logger.Info("Running FaceLock in one-shot mode")
+		logger.Info("Running LinuxHello in one-shot mode")
 		if err := runOneShot(ctx, cfg, logger); err != nil {
 			logger.Fatalf("One-shot error: %v", err)
 		}
@@ -106,7 +106,7 @@ func setupSignalHandling(logger *logrus.Logger, configPath string, cfg **config.
 }
 
 func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) error {
-	logger.Info("Starting FaceLock daemon...")
+	logger.Info("Starting LinuxHello daemon...")
 
 	// Initialize authentication engine
 	engine, err := auth.NewEngine(cfg, logger)
@@ -212,7 +212,7 @@ func runOneShot(ctx context.Context, cfg *config.Config, logger *logrus.Logger) 
 }
 
 func printVersion() {
-	fmt.Println("FaceLock - Linux Face Recognition System")
+	fmt.Println("LinuxHello - Linux Face Recognition System")
 	fmt.Println("========================================")
 	fmt.Println("Version: 0.1.0 (PoC)")
 	fmt.Println("License: MIT")

@@ -3,6 +3,7 @@ name: Build and Test
 on:
   push:
     branches: [main, develop]
+    tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -89,9 +90,9 @@ jobs:
 
       - name: Build
         run: |
-          go build -v ./cmd/facelock
-          go build -v ./cmd/facelock-enroll
-          go build -v ./cmd/facelock-test
+          go build -v ./cmd/linuxhello
+          go build -v ./cmd/linuxhello-enroll
+          go build -v ./cmd/linuxhello-test
 
       - name: Run tests
         run: go test -v ./...
@@ -132,9 +133,9 @@ jobs:
 
       - name: Build
         run: |
-          go build -v ./cmd/facelock
-          go build -v ./cmd/facelock-enroll
-          go build -v ./cmd/facelock-test
+          go build -v ./cmd/linuxhello
+          go build -v ./cmd/linuxhello-enroll
+          go build -v ./cmd/linuxhello-test
 
   # Arch Linux build
   build-arch:
@@ -171,13 +172,13 @@ jobs:
 
       - name: Build
         run: |
-          go build -v ./cmd/facelock
-          go build -v ./cmd/facelock-enroll
-          go build -v ./cmd/facelock-test
+          go build -v ./cmd/linuxhello
+          go build -v ./cmd/linuxhello-enroll
+          go build -v ./cmd/linuxhello-test
 
-  # Release job
+  # Release job with proper packaging
   release:
-    name: Release
+    name: Build and Release Packages
     needs: [build-debian, build-fedora, build-arch]
     runs-on: ubuntu-latest
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/'))
@@ -187,6 +188,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Full history for proper version detection
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -194,7 +197,14 @@ jobs:
           go-version: ${{ env.GO_VERSION_STABLE }}
           cache: true
 
-      - name: Install dependencies
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web-ui/package-lock.json
+
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -202,7 +212,8 @@ jobs:
             libpam0g-dev \
             libsqlite3-dev \
             rpm \
-            dpkg-dev
+            dpkg-dev \
+            pkg-config
 
       - name: Download ONNX Runtime
         run: |
@@ -212,31 +223,138 @@ jobs:
           sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
           sudo ldconfig
 
-      - name: Build release binaries
+      - name: Build web frontend
         run: |
-          mkdir -p dist
+          cd web-ui
+          npm ci --omit=dev
+          npm run build
+          cd ..
+
+      - name: Build Go binaries
+        run: |
+          mkdir -p bin
           
-          # Linux AMD64
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-linux-amd64 ./cmd/facelock
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-enroll-linux-amd64 ./cmd/facelock-enroll
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/facelock-test-linux-amd64 ./cmd/facelock-test
+          # Build main binaries
+          export CGO_ENABLED=1
+          go build -ldflags="-s -w" -o bin/linuxhello ./cmd/linuxhello
+          go build -ldflags="-s -w" -o bin/linuxhello-enroll ./cmd/linuxhello-enroll
+          go build -ldflags="-s -w" -o bin/linuxhello-test ./cmd/linuxhello-test
+          go build -ldflags="-s -w" -o bin/linuxhello-gui ./cmd/linuxhello-gui
           
-          # PAM module (requires CGO, only build for host arch)
+          # Build PAM module
           CGO_CFLAGS="-I/usr/include" \
           CGO_LDFLAGS="-lpam -lpam_misc" \
-          go build -buildmode=c-shared -ldflags="-s -w" -o dist/pam_facelock.so ./pkg/pam
+          go build -buildmode=c-shared -ldflags="-s -w" -o bin/pam_linuxhello.so ./pkg/pam
 
-      - name: Create release packages
+      - name: Build distribution packages
         run: |
-          mkdir -p dist/packages
+          # Get version from tag
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Building packages for version: $VERSION"
           
-          # Create tarball
-          tar -czf "dist/packages/facelock-${GITHUB_REF_NAME}-linux-amd64.tar.gz" \
-            -C dist facelock-linux-amd64 facelock-enroll-linux-amd64 facelock-test-linux-amd64 pam_facelock.so \
-            -C ../ configs scripts README.md
+          # Run packaging script
+          ./packaging/build-packages.sh "$VERSION"
+
+      - name: Create model download helper
+        run: |
+          mkdir -p dist/helpers
+          cat > dist/helpers/download-models.sh << 'EOF'
+          #!/bin/bash
+          # LinuxHello Model Download Helper
+          
+          MODEL_DIR="/usr/share/linuxhello/models"
+          TEMP_DIR="/tmp/linuxhello-models"
+          
+          echo "LinuxHello Model Download Helper"
+          echo "==============================="
+          echo ""
+          
+          # Check if running as root
+          if [ "$(id -u)" != "0" ]; then
+             echo "This script should be run as root to install models system-wide"
+             echo "Run: sudo $0"
+             exit 1
+          fi
+          
+          mkdir -p "$MODEL_DIR" "$TEMP_DIR"
+          cd "$TEMP_DIR"
+          
+          echo "Downloading ONNX models..."
+          
+          # Download face detection model
+          if [ ! -f "$MODEL_DIR/scrfd_person_2.5g.onnx" ]; then
+              echo "Downloading face detection model (scrfd_person_2.5g.onnx)..."
+              wget -q --show-progress "https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_person_2.5g.onnx"
+              mv scrfd_person_2.5g.onnx "$MODEL_DIR/"
+          fi
+          
+          # Download face recognition model
+          if [ ! -f "$MODEL_DIR/arcface_r50.onnx" ]; then
+              echo "Downloading face recognition model (arcface_r50.onnx)..."
+              wget -q --show-progress "https://github.com/deepinsight/insightface/releases/download/v0.7/arcface_r50.onnx"
+              mv arcface_r50.onnx "$MODEL_DIR/"
+          fi
+          
+          echo "Models installed successfully!"
+          echo "You can now start LinuxHello services."
+          EOF
+          chmod +x dist/helpers/download-models.sh
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/packages/*
+          files: |
+            dist/packages/*
+            dist/helpers/download-models.sh
           generate_release_notes: true
+          body: |
+            ## LinuxHello Release ${{ github.ref_name }}
+            
+            ### Installation
+            
+            **For Fedora/RHEL/CentOS:**
+            ```bash
+            # Download and install RPM
+            wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/linuxhello-*-1.*.rpm
+            sudo dnf install linuxhello-*.rpm
+            
+            # Download models
+            sudo wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/download-models.sh
+            sudo chmod +x download-models.sh && sudo ./download-models.sh
+            
+            # Start services
+            sudo systemctl enable --now linuxhello-inference linuxhello-gui
+            
+            # Access GUI at http://localhost:8080
+            ```
+            
+            **For Debian/Ubuntu:**
+            ```bash
+            # Download and install DEB
+            wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/linuxhello_*_amd64.deb
+            sudo apt install ./linuxhello_*.deb
+            
+            # Download models and start (same as above)
+            ```
+            
+            **Generic Installation:**
+            ```bash
+            # Download tarball
+            wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/linuxhello-*-linux-*.tar.gz
+            tar -xzf linuxhello-*.tar.gz
+            cd linuxhello-generic
+            sudo ./install.sh
+            ```
+            
+            ### Usage
+            1. Open http://localhost:8080 in your browser
+            2. Go to "Enroll Face" tab and enroll your face
+            3. Go to "System & PAM" tab and enable PAM for sudo
+            4. Test with `sudo ls` - it should authenticate using your face!
+            
+            ### Features in this release
+            - 🎯 Authentication test page with visual debugging
+            - 📦 Proper RPM/DEB packaging for easy installation
+            - 🔧 Improved PAM integration for Fedora/RHEL
+            - 🖥️ Web-based management GUI
+            - 🔐 Comprehensive face authentication system

@@ -11,7 +11,7 @@ import (
 	"math"
 	"time"
 
-	inference "github.com/facelock/facelock/api"
+	inference "github.com/MrCodeEU/LinuxHello/api"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

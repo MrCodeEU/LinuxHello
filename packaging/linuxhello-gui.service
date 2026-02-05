@@ -1,0 +1,22 @@
+[Unit]
+Description=LinuxHello Management GUI
+After=network.target linuxhello-inference.service
+Wants=linuxhello-inference.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/share/linuxhello
+ExecStart=/usr/bin/linuxhello-gui
+Restart=on-failure
+RestartSec=5s
+
+# Security settings
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/linuxhello /var/log /etc/pam.d
+
+[Install]
+WantedBy=multi-user.target

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/facelock/facelock/internal/config"
+	"github.com/MrCodeEU/LinuxHello/internal/config"
 	"github.com/vladimirvivien/go4vl/device"
 	"github.com/vladimirvivien/go4vl/v4l2"
 )
@@ -52,6 +52,8 @@ type Camera struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	mu        sync.RWMutex // Protect concurrent access
+	stopOnce  sync.Once
+	isRunning bool
 	logger    Logger
 }
 
@@ -84,13 +86,16 @@ func NewCamera(cfg config.CameraConfig) (*Camera, error) {
 
 // Initialize configures the camera with the specified settings
 func (c *Camera) Initialize() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	// Camera initialization with go4vl is simplified
 	// The device handles format negotiation automatically
 	c.logger.Infof("Camera %s initialized successfully", c.config.Device)
 	return nil
 }
 
-func triggerIREmitter(devicePath string) error {
+func triggerIREmitter(_ string) error {
 	// Check if linux-enable-ir-emitter exists
 	_, err := exec.LookPath("linux-enable-ir-emitter")
 	if err != nil {
@@ -98,10 +103,6 @@ func triggerIREmitter(devicePath string) error {
 	}
 
 	// Run the command: linux-enable-ir-emitter run
-	// Note: In typical usage, this command might need the device path, but checking the
-	// external tool usage, 'run' usually attempts to enable configured emitters.
-	// You might need to confirm the exact flag if 'run' isn't sufficient or if specific
-	// device targeting is needed. Based on common usage, 'run' is often global.
 	cmd := exec.Command("linux-enable-ir-emitter", "run")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to enable IR emitter: %w (output: %s)", err, output)
@@ -117,15 +118,33 @@ func (c *Camera) TriggerIR() error {
 
 // Start begins video capture
 func (c *Camera) Start() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.isRunning {
+		return nil
+	}
+
+	// If device was closed, reopen it
+	if c.device == nil {
+		dev, err := device.Open(c.config.Device)
+		if err != nil {
+			return fmt.Errorf("failed to reopen camera device %s: %w", c.config.Device, err)
+		}
+		c.device = dev
+	}
+
 	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.stopOnce = sync.Once{}
 
 	// Start the device
 	if err := c.device.Start(c.ctx); err != nil {
 		return fmt.Errorf("failed to start camera: %w", err)
 	}
 
+	c.isRunning = true
+
 	// Trigger IR emitter after starting the stream
-	// Some devices reset controls on start, so we trigger here
 	if err := c.TriggerIR(); err != nil {
 		c.logger.Infof("Note: IR emitter trigger skipped or failed: %v", err)
 	}
@@ -138,17 +157,82 @@ func (c *Camera) Start() error {
 
 // Stop stops video capture
 func (c *Camera) Stop() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.isRunning {
+		return nil
+	}
+
+	c.stopOnce.Do(func() {
+		c.performSafeShutdown()
+	})
+
+	c.logger.Infof("Camera stopped successfully")
+	return nil
+}
+
+// performSafeShutdown safely shuts down the camera with panic recovery
+func (c *Camera) performSafeShutdown() {
+	// Use defer with recover to handle any panics from go4vl cleanup
+	defer func() {
+		if r := recover(); r != nil {
+			c.logger.Infof("Recovered from panic during camera stop: %v", r)
+		}
+	}()
+
+	c.cancelCapture()
+	c.stopDevice()
+	c.closeDevice()
+	c.resetState()
+}
+
+// cancelCapture cancels the capture context
+func (c *Camera) cancelCapture() {
 	if c.cancel != nil {
 		c.cancel()
 	}
+}
 
-	if c.device != nil {
-		if err := c.device.Stop(); err != nil {
-			return fmt.Errorf("failed to stop camera: %w", err)
-		}
+// stopDevice safely stops the camera device
+func (c *Camera) stopDevice() {
+	if c.device == nil {
+		return
 	}
 
-	return nil
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.logger.Infof("Recovered from device stop panic: %v", r)
+			}
+		}()
+		_ = c.device.Stop()
+	}()
+}
+
+// closeDevice safely closes the camera device
+func (c *Camera) closeDevice() {
+	if c.device == nil {
+		return
+	}
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.logger.Infof("Recovered from device close panic: %v", r)
+			}
+		}()
+		_ = c.device.Close()
+	}()
+
+	c.device = nil
+}
+
+// resetState resets the camera state for potential restart
+func (c *Camera) resetState() {
+	c.isRunning = false
+	// Reset stopOnce so we can start again
+	c.stopOnce = sync.Once{}
 }
 
 // GetFrame returns the next available frame (thread-safe)
@@ -178,17 +262,9 @@ func (c *Camera) captureLoop() {
 	for {
 		select {
 		case <-c.ctx.Done():
-			// Drain any remaining frames to prevent goroutine leak
-			go func() {
-				for range c.frameChan {
-					// Discard frames
-				}
-			}()
-			close(c.frameChan)
 			return
 		case buf, ok := <-frameChan:
 			if !ok {
-				close(c.frameChan)
 				return
 			}
 
@@ -208,7 +284,6 @@ func (c *Camera) captureLoop() {
 			case "MJPEG", "":
 				pixelFormat = v4l2.PixelFmtMJPEG
 			default:
-				// For unknown formats, try grayscale
 				pixelFormat = v4l2.PixelFmtGrey
 			}
 
@@ -220,24 +295,13 @@ func (c *Camera) captureLoop() {
 				Timestamp: time.Now(),
 			}
 
-			// Non-blocking send with drop-oldest strategy to prevent memory buildup
+			// Non-blocking send
 			select {
 			case c.frameChan <- frame:
-				// Frame sent successfully
 			case <-c.ctx.Done():
 				return
 			default:
-				// Channel full, drop oldest frame and try again
-				select {
-				case <-c.frameChan:
-					// Dropped oldest
-				default:
-				}
-				select {
-				case c.frameChan <- frame:
-				default:
-					// Still can't send, drop this frame
-				}
+				// Busy, drop frame
 			}
 		}
 	}
@@ -260,7 +324,6 @@ func (c *Camera) GetSupportedFormats() ([]v4l2.FormatDescription, error) {
 
 // GetDeviceInfo returns information about the camera device
 func (c *Camera) GetDeviceInfo() (string, error) {
-	// Simplified: return device path as string
 	return c.config.Device, nil
 }
 
@@ -289,7 +352,6 @@ func yuyvToRGB(data []byte, width, height int) (image.Image, error) {
 
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x += 2 {
-			// YUYV is 4 bytes for 2 pixels
 			idx := (y*width + x) * 2
 			if idx+3 >= len(data) {
 				break
@@ -300,7 +362,6 @@ func yuyvToRGB(data []byte, width, height int) (image.Image, error) {
 			Y1 := int(data[idx+2])
 			V := int(data[idx+3]) - 128
 
-			// Convert to RGB for both pixels using BT.601
 			r0, g0, b0 := yuvToRGB(Y0, U, V)
 			r1, g1, b1 := yuvToRGB(Y1, U, V)
 
@@ -315,7 +376,6 @@ func yuyvToRGB(data []byte, width, height int) (image.Image, error) {
 }
 
 func yuvToRGB(y, u, v int) (uint8, uint8, uint8) {
-	// BT.601 conversion
 	c := y - 16
 	d := u
 	e := v
