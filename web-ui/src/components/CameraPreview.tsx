@@ -124,7 +124,10 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
   }
 
   const renderContent = () => {
-    if (!isActive) {
+    // Check if we are displaying a static result (image data provided)
+    const isStaticResult = !isActive && showOverlay && !!overlayData?.image_data
+
+    if (!isActive && !isStaticResult) {
       return (
         <div className="flex flex-col items-center justify-center h-full text-gray-400">
           <CameraOff size={48} className="mb-4" />
@@ -133,7 +136,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
       )
     }
 
-    if (hasError) {
+    if (hasError && !isStaticResult) {
       return (
         <div className="flex flex-col items-center justify-center h-full text-red-400">
           <CameraOff size={48} className="mb-4" />
@@ -142,7 +145,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
       )
     }
 
-    if (isLoading) {
+    if (isLoading && !isStaticResult) {
       return (
         <div className="flex flex-col items-center justify-center h-full text-gray-400">
           <Camera size={48} className="mb-4 animate-pulse" />

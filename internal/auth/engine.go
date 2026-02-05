@@ -156,6 +156,14 @@ func (e *Engine) Start() error {
 		return err
 	}
 
+	if e.irCamera != nil {
+		if err := e.irCamera.Start(); err != nil {
+			// If IR camera fails, we should probably stop the main camera and return error
+			_ = e.camera.Stop()
+			return fmt.Errorf("failed to start IR camera: %w", err)
+		}
+	}
+
 	// Give camera time to warm up and produce valid frames
 	time.Sleep(200 * time.Millisecond)
 
@@ -308,12 +316,28 @@ func (e *Engine) captureAndDetect() (image.Image, models.Detection, error) {
 		return nil, models.Detection{}, fmt.Errorf("inference client not connected")
 	}
 
-	// Try multiple fresh frames to find the best one
-	maxAttempts := 10
+	var lastImage image.Image
+	maxAttempts := 5 // Reduced from 10 to improve responsiveness
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		img, detection, err := e.attemptCaptureFrame(attempt)
+		// Small delay between frame captures to ensure fresh frames
+		if attempt > 0 {
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		// 1. Capture frame
+		img, err := e.captureFrameFromCamera(attempt)
 		if err != nil {
-			continue // Try next attempt
+			// If capture fails, we can't do anything with this attempt
+			continue
+		}
+		lastImage = img
+
+		// 2. Detect faces
+		detection, err := e.detectSingleFace(img, attempt)
+		if err != nil {
+			// Detection failed, try next attempt
+			continue
 		}
 
 		e.logger.Infof("Successfully captured frame with face detection on attempt %d (confidence: %.3f)",
@@ -323,29 +347,7 @@ func (e *Engine) captureAndDetect() (image.Image, models.Detection, error) {
 	}
 
 	// All attempts failed
-	return nil, models.Detection{}, fmt.Errorf("no face detected after %d attempts (ensure face is visible and well-lit)", maxAttempts)
-}
-
-// attemptCaptureFrame attempts to capture and process a single frame
-func (e *Engine) attemptCaptureFrame(attempt int) (image.Image, models.Detection, error) {
-	// Small delay between frame captures to ensure fresh frames
-	if attempt > 0 {
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	// Capture frame
-	img, err := e.captureFrameFromCamera(attempt)
-	if err != nil {
-		return nil, models.Detection{}, err
-	}
-
-	// Detect faces
-	detection, err := e.detectSingleFace(img, attempt)
-	if err != nil {
-		return nil, models.Detection{}, err
-	}
-
-	return img, detection, nil
+	return lastImage, models.Detection{}, fmt.Errorf("no face detected after %d attempts (ensure face is visible and well-lit)", maxAttempts)
 }
 
 // captureFrameFromCamera captures and enhances a frame from the camera

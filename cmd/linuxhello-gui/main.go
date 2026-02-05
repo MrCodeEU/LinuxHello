@@ -35,11 +35,15 @@ var (
 
 	// Enrollment state
 	enrollMu       sync.Mutex
-	isEnrolling       bool
-	enrollTarget      string
-	enrollSamples     [][]float32
-	lastEnrollTime    time.Time
-	enrollMessage     string // New field for status messages
+	isEnrolling    bool
+	enrollTarget   string
+	enrollSamples  [][]float32
+	lastEnrollTime time.Time
+	enrollMessage  string
+
+	// Auth Test state
+	authTestMu    sync.Mutex
+	isTestingAuth bool
 
 	// Streaming
 	subscribers = make(map[chan []byte]bool)
@@ -75,7 +79,10 @@ const (
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("FATAL PANIC RECOVERED: %v\n%s\n", r, debug.Stack())
+			msg := fmt.Sprintf("FATAL PANIC RECOVERED: %v\n%s\n", r, debug.Stack())
+			fmt.Print(msg)
+			// Write to a crash log file
+			_ = os.WriteFile("/tmp/linuxhello-gui-crash.log", []byte(msg), 0644)
 			os.Exit(1)
 		}
 	}()
@@ -91,7 +98,7 @@ func main() {
 
 	var err error
 	logger = logrus.New()
-	logger.SetLevel(logrus.InfoLevel)
+	logger.SetLevel(logrus.DebugLevel) // Enable debug logging by default for troubleshooting
 
 	cfg, err = config.Load(*configPath)
 	if err != nil {
@@ -480,6 +487,14 @@ func broadcaster() {
 			continue
 		}
 
+		// If authentication test is running, pause broadcasting to avoid stealing frames
+		authTestMu.Lock()
+		testing := isTestingAuth
+		authTestMu.Unlock()
+		if testing {
+			continue
+		}
+
 		frame, ok := getCameraFrame()
 		if !ok {
 			continue
@@ -510,7 +525,11 @@ func shouldProcessFrame() bool {
 	enrolling := isEnrolling
 	enrollMu.Unlock()
 
-	return numSubs > 0 || enrolling
+	authTestMu.Lock()
+	testingAuth := isTestingAuth
+	authTestMu.Unlock()
+
+	return numSubs > 0 || enrolling || testingAuth
 }
 
 // getCameraFrame safely retrieves a frame from the camera
@@ -785,18 +804,18 @@ func handleEnrollStatus(w http.ResponseWriter, r *http.Request) {
 
 	enrollMu.Lock()
 	status := struct {
-		IsEnrolling    bool   `json:"is_enrolling"`
-		Username       string `json:"username"`
-		Progress       int    `json:"progress"`
-		Total          int    `json:"total"`
-		Message        string `json:"message"`
+		IsEnrolling bool   `json:"is_enrolling"`
+		Username    string `json:"username"`
+		Progress    int    `json:"progress"`
+		Total       int    `json:"total"`
+		Message     string `json:"message"`
 	}{
 		IsEnrolling: isEnrolling,
 		Username:    enrollTarget,
 		Progress:    len(enrollSamples),
 		Total:       cfg.Recognition.EnrollmentSamples,
 	}
-	
+
 	if isEnrolling {
 		if len(enrollSamples) == 0 {
 			status.Message = enrollMessage
@@ -822,6 +841,20 @@ func handleAuthTest(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("Auth Test: Starting authentication test")
 
+	// Set testing flag to pause broadcaster
+	authTestMu.Lock()
+	isTestingAuth = true
+	authTestMu.Unlock()
+
+	defer func() {
+		authTestMu.Lock()
+		isTestingAuth = false
+		authTestMu.Unlock()
+		
+		// Resume broadcaster immediately (ensure camera state)
+		go ensureCameraState()
+	}()
+
 	// Prepare camera for authentication test
 	if err := ensureAuthTestCamera(); err != nil {
 		http.Error(w, fmt.Sprintf(FailedToStartCamera, err), 500)
@@ -831,9 +864,6 @@ func handleAuthTest(w http.ResponseWriter, r *http.Request) {
 	// Clear buffer and perform authentication
 	clearCameraBuffer()
 	response := performAuthenticationTest(r.Context())
-
-	// Clean up after test
-	cleanupAfterAuthTest()
 
 	// Send response
 	w.Header().Set(ContentTypeHeader, ApplicationJSON)
@@ -932,21 +962,6 @@ func addDebugInfoToResponse(response map[string]interface{}, debugInfo *auth.Deb
 	}
 }
 
-// cleanupAfterAuthTest stops the camera after authentication test
-func cleanupAfterAuthTest() {
-	camMu.Lock()
-	defer camMu.Unlock()
-
-	if isRunning {
-		if err := engine.Stop(); err != nil {
-			logger.Errorf("Auth Test: Failed to stop camera: %v", err)
-		} else {
-			isRunning = false
-			logger.Info("Auth Test: Camera stopped after test")
-		}
-	}
-}
-
 func handleCameraStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, MethodNotAllowed, http.StatusMethodNotAllowed)
@@ -1041,9 +1056,9 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 	// Parse journalctl JSON output and convert to our format
 	type JournalEntry struct {
-		Timestamp      string `json:"__REALTIME_TIMESTAMP"`
-		Message        string `json:"MESSAGE"`
-		Priority       string `json:"PRIORITY"`
+		Timestamp        string `json:"__REALTIME_TIMESTAMP"`
+		Message          string `json:"MESSAGE"`
+		Priority         string `json:"PRIORITY"`
 		SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
 	}
 
@@ -1056,12 +1071,12 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 	var logs []LogEntry
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	
+
 	for _, line := range lines {
 		if line == "" {
 			continue
 		}
-		
+
 		var entry JournalEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
@@ -1071,7 +1086,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 		if timestampMicros := entry.Timestamp; timestampMicros != "" {
 			if micros, err := strconv.ParseInt(timestampMicros, 10, 64); err == nil {
 				timestamp := time.Unix(micros/1000000, (micros%1000000)*1000)
-				
+
 				// Convert priority to level
 				level := "info"
 				switch entry.Priority {

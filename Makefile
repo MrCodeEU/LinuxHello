@@ -455,7 +455,8 @@ get-version: ## Show current version from packaging/linuxhello.spec
 test-local: ## Test build locally with act-cli
 	@./scripts/test-local.sh
 
-install-rpm: ## Install the built RPM package
+install-rpm: ## Install the built RPM package (after make build-rpm)
+	@make build-rpm
 	@# Find all RPMs and sort by version number to get the highest version
 	@RPM=$$(find ~/rpmbuild/RPMS -name "linuxhello-*.rpm" -type f | while read rpm; do \
 		version=$$(basename "$$rpm" | sed 's/linuxhello-\(.*\)-1\.fc.*\.rpm/\1/'); \
