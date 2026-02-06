@@ -99,16 +99,15 @@ jobs:
           # Install with dependencies
           sudo dnf install ./linuxhello-*.rpm
           
-          # Start services
-          sudo systemctl start linuxhello-inference linuxhello-gui
-          sudo systemctl enable linuxhello-inference linuxhello-gui
-          
-          # Open management GUI
-          firefox http://localhost:8080
+          # Start inference service
+          sudo systemctl enable --now linuxhello-inference
+
+          # Launch the desktop GUI
+          sudo linuxhello
           ```
-          
+
           ### Quick Start
-          1. Open the web interface at http://localhost:8080
+          1. Launch the desktop GUI: `sudo linuxhello`
           2. Enroll your face in the "Enroll Face" tab
           3. Enable PAM authentication in the "System & PAM" tab
           4. Test with `sudo ls` - your face should be recognized!

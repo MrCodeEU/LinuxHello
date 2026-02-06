@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react'
 import { Camera, CameraOff } from 'lucide-react'
+import { startCameraStream, stopCameraStream, EventsOn } from '../wails'
 
 interface CameraPreviewProps {
   isActive?: boolean
@@ -28,39 +29,50 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
   const [isLoading, setIsLoading] = useState(true)
   const [hasError, setHasError] = useState(false)
 
-  // Camera stream URL
-  const streamUrl = isActive ? '/api/stream' : ''
-
+  // Event-based camera streaming via Wails
   useEffect(() => {
-    if (!isActive || !imgRef.current) {
+    if (!isActive) {
       setIsLoading(false)
       return
     }
 
-    const img = imgRef.current
-    
-    const handleLoad = () => {
-      setIsLoading(false)
-      setHasError(false)
-    }
+    setIsLoading(true)
+    setHasError(false)
 
-    const handleError = () => {
+    let frameReceived = false
+
+    const cancelFrame = EventsOn('camera:frame', (base64Data: string) => {
+      if (!frameReceived) {
+        frameReceived = true
+        setIsLoading(false)
+        setHasError(false)
+      }
+
+      if (imgRef.current) {
+        imgRef.current.src = 'data:image/jpeg;base64,' + base64Data
+      }
+    })
+
+    // Start the camera stream
+    startCameraStream().catch(() => {
       setIsLoading(false)
       setHasError(true)
-    }
+    })
 
-    img.addEventListener('load', handleLoad)
-    img.addEventListener('error', handleError)
-
-    // Start loading the stream
-    img.src = streamUrl
+    // Set a timeout for loading state
+    const loadTimeout = setTimeout(() => {
+      if (!frameReceived) {
+        setIsLoading(false)
+        setHasError(true)
+      }
+    }, 10000)
 
     return () => {
-      img.removeEventListener('load', handleLoad)
-      img.removeEventListener('error', handleError)
-      img.src = ''
+      clearTimeout(loadTimeout)
+      cancelFrame()
+      stopCameraStream().catch(() => {})
     }
-  }, [isActive, streamUrl])
+  }, [isActive])
 
   // Draw bounding boxes overlay
   useEffect(() => {
@@ -82,10 +94,10 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
         // Set canvas size to match image
         canvas.width = img.width
         canvas.height = img.height
-        
+
         // Draw the image
         ctx.drawImage(img, 0, 0)
-        
+
         // Draw bounding boxes
         drawBoundingBoxes(ctx, overlayData.bounding_boxes || [])
       }
@@ -108,15 +120,15 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
     boxes.forEach((box) => {
       // Draw rectangle
       ctx.strokeRect(box.x, box.y, box.width, box.height)
-      
+
       // Draw confidence label
       const label = `${(box.confidence * 100).toFixed(1)}%`
       const labelWidth = ctx.measureText(label).width
-      
+
       // Background for label
       ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
       ctx.fillRect(box.x, box.y - 25, labelWidth + 10, 20)
-      
+
       // Label text
       ctx.fillStyle = '#00ff00'
       ctx.fillText(label, box.x + 5, box.y - 8)
@@ -158,7 +170,6 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
       <div className="relative w-full h-full">
         <img
           ref={imgRef}
-          src={streamUrl}
           alt="Camera Preview"
           className="w-full h-full object-cover rounded-lg"
           style={{ display: showOverlay && overlayData?.image_data ? 'none' : 'block' }}
@@ -167,7 +178,7 @@ export const CameraPreview: React.FC<CameraPreviewProps> = ({
           <canvas
             ref={overlayCanvasRef}
             className="absolute top-0 left-0 w-full h-full rounded-lg"
-            style={{ 
+            style={{
               display: overlayData?.image_data || overlayData?.bounding_boxes ? 'block' : 'none',
               objectFit: 'cover'
             }}

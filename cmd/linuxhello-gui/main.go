@@ -125,10 +125,10 @@ func main() {
 	go broadcaster()
 
 	// Check if we're running from development directory or installed
-	webUIDir := "./web-ui/dist"
+	webUIDir := "./frontend/dist"
 	if _, err := os.Stat(webUIDir); os.IsNotExist(err) {
 		// Use installed location
-		webUIDir = "/usr/share/linuxhello/web-ui"
+		webUIDir = "/usr/share/linuxhello/frontend"
 	}
 
 	http.Handle("/", http.FileServer(http.Dir(webUIDir)))
@@ -850,7 +850,7 @@ func handleAuthTest(w http.ResponseWriter, r *http.Request) {
 		authTestMu.Lock()
 		isTestingAuth = false
 		authTestMu.Unlock()
-		
+
 		// Resume broadcaster immediately (ensure camera state)
 		go ensureCameraState()
 	}()
@@ -925,6 +925,10 @@ func buildAuthTestResponse(result *auth.Result) map[string]interface{} {
 		"success":         result.Success,
 		"processing_time": result.ProcessingTime.String(),
 		"liveness_passed": result.LivenessPassed,
+	}
+
+	if result.ChallengeDescription != "" {
+		response["challenge_description"] = result.ChallengeDescription
 	}
 
 	if result.User != nil {

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"image"
 	"math"
 	"math/rand"
 	"time"
@@ -99,14 +100,15 @@ func (cs *ChallengeSystem) WaitForChallenge(
 	challenge Challenge,
 	cam *camera.Camera,
 	initialDetection models.Detection,
+	detector func(image.Image) ([]models.Detection, error),
 ) bool {
 	switch challenge.Type {
 	case ChallengeBlink:
-		return cs.detectBlink(ctx, cam, initialDetection)
+		return cs.detectBlink(ctx, cam, initialDetection, detector)
 	case ChallengeNod:
-		return cs.detectNod(ctx, cam, initialDetection)
+		return cs.detectNod(ctx, cam, initialDetection, detector)
 	case ChallengeTurnLeft, ChallengeTurnRight:
-		return cs.detectTurn(ctx, cam, initialDetection, challenge.Type)
+		return cs.detectTurn(ctx, cam, initialDetection, challenge.Type, detector)
 	default:
 		return false
 	}
@@ -117,21 +119,33 @@ func (cs *ChallengeSystem) detectBlink(
 	ctx context.Context,
 	cam *camera.Camera,
 	initialDetection models.Detection,
+	detector func(image.Image) ([]models.Detection, error),
 ) bool {
-	// Blink detection using eye landmarks
-	// Landmarks: 0=left eye, 1=right eye, 2=nose, 3=left mouth, 4=right mouth
+	// Blink detection requires detailed eye landmarks (usually 6 points per eye)
+	// to calculate Eye Aspect Ratio (EAR).
+	// Our current model (SCRFD) only provides 5-point landmarks (eye centers).
+	// Therefore, we cannot reliably detect blinking.
+	// TODO: implement blink detection when a model with 6-point eye landmarks is available
+	return true
+}
 
-	if len(initialDetection.Landmarks) < 2 {
+// detectNod detects head nodding
+func (cs *ChallengeSystem) detectNod(
+	ctx context.Context,
+	cam *camera.Camera,
+	initialDetection models.Detection,
+	detector func(image.Image) ([]models.Detection, error),
+) bool {
+	if len(initialDetection.Landmarks) < 3 {
 		return false
 	}
 
-	// Track eye state over time
-	blinkDetected := false
-	framesWithEyesOpen := 0
-	framesWithEyesClosed := 0
-	consecutiveClosed := 0
+	// Initial nose Y relative to eye center Y (Pitch approximation)
+	initialPitch := calculatePitch(initialDetection.Landmarks)
 
-	ticker := time.NewTicker(50 * time.Millisecond) // 20 FPS check
+	var maxUp, maxDown float64
+
+	ticker := time.NewTicker(100 * time.Millisecond) // 10 FPS is enough for gestures
 	defer ticker.Stop()
 
 	timeout := time.After(time.Duration(cs.config.TimeoutSeconds) * time.Second)
@@ -141,9 +155,8 @@ func (cs *ChallengeSystem) detectBlink(
 		case <-ctx.Done():
 			return false
 		case <-timeout:
-			return blinkDetected
+			return false
 		case <-ticker.C:
-			// Get frame
 			frame, ok := cam.GetFrame()
 			if !ok {
 				continue
@@ -154,79 +167,44 @@ func (cs *ChallengeSystem) detectBlink(
 				continue
 			}
 
-			// Detect faces (simplified - in production use a proper face detector)
-			// For now, assume face position is stable
-
-			// Check eye state using simple brightness analysis
-			// In production, use proper eye aspect ratio (EAR) calculation
-			leftEyeOpen := cs.isEyeOpen(img, initialDetection.Landmarks[0])
-			rightEyeOpen := cs.isEyeOpen(img, initialDetection.Landmarks[1])
-
-			if leftEyeOpen && rightEyeOpen {
-				framesWithEyesOpen++
-				consecutiveClosed = 0
-			} else {
-				framesWithEyesClosed++
-				consecutiveClosed++
+			detections, err := detector(img)
+			if err != nil || len(detections) == 0 {
+				continue
 			}
 
-			// Detect blink: eyes closed for a short period then open
-			if consecutiveClosed >= 3 && framesWithEyesOpen > 5 {
+			// Use the largest face
+			det := detections[0]
+			if len(det.Landmarks) < 3 {
+				continue
+			}
+
+			currentPitch := calculatePitch(det.Landmarks)
+			diff := currentPitch - initialPitch
+
+			if diff > maxUp {
+				maxUp = diff
+			}
+			if diff < maxDown {
+				maxDown = diff
+			}
+
+			// Thresholds for nod (normalized by eye distance)
+			// Pitch is roughly: nose_y - eye_center_y
+			// Positive diff = nose went down (nod down)
+			// Negative diff = nose went up (nod up)
+
+			// We look for significant movement in both directions or a strong single nod
+			eyeDist := distance(det.Landmarks[0], det.Landmarks[1])
+			if eyeDist == 0 {
+				continue
+			}
+
+			normalizedRange := (maxUp - maxDown) / eyeDist
+
+			// If total vertical movement is > 30% of eye distance, consider it a nod
+			if normalizedRange > 0.3 {
 				return true
 			}
-
-			// Reset if tracking too long
-			if framesWithEyesOpen > 100 {
-				framesWithEyesOpen = 0
-				framesWithEyesClosed = 0
-			}
-		}
-	}
-}
-
-// isEyeOpen checks if an eye is open based on region brightness variance
-// In production, use proper EAR (Eye Aspect Ratio) calculation
-func (cs *ChallengeSystem) isEyeOpen(_ interface{}, _ [2]float32) bool {
-	// Simplified - always return true for PoC
-	// In production:
-	// 1. Extract eye region around landmark
-	// 2. Calculate eye aspect ratio (EAR)
-	// 3. EAR < threshold means closed
-	return true
-}
-
-// detectNod detects head nodding
-func (cs *ChallengeSystem) detectNod(
-	ctx context.Context,
-	_ *camera.Camera,
-	initialDetection models.Detection,
-) bool {
-	// Nod detection using vertical movement of face center
-	// Calculate initial position for reference
-	initialY := (initialDetection.Y1 + initialDetection.Y2) / 2
-
-	var maxUpwardDelta, maxDownwardDelta float32
-	maxUpwardDelta = float32(-initialY) // Initialize with baseline
-
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	timeout := time.After(time.Duration(cs.config.TimeoutSeconds) * time.Second)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-timeout:
-			// Check if we detected a nod pattern
-			return maxUpwardDelta > 10 && maxDownwardDelta > 10
-		case <-ticker.C:
-			// Get frame and detect face
-			// In production, track face position continuously
-			// For PoC, simulate detection
-
-			// Simulate movement detection
-			// This would use actual face detection in production
 		}
 	}
 }
@@ -237,14 +215,15 @@ func (cs *ChallengeSystem) detectTurn(
 	cam *camera.Camera,
 	initialDetection models.Detection,
 	direction ChallengeType,
+	detector func(image.Image) ([]models.Detection, error),
 ) bool {
-	// Turn detection using horizontal face position change
-	// or using pose estimation (yaw angle)
+	if len(initialDetection.Landmarks) < 3 {
+		return false
+	}
 
-	initialX := (initialDetection.X1 + initialDetection.X2) / 2
-	initialWidth := initialDetection.X2 - initialDetection.X1
+	initialYaw := calculateYaw(initialDetection.Landmarks)
 
-	ticker := time.NewTicker(50 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	timeout := time.After(time.Duration(cs.config.TimeoutSeconds) * time.Second)
@@ -256,7 +235,6 @@ func (cs *ChallengeSystem) detectTurn(
 		case <-timeout:
 			return false
 		case <-ticker.C:
-			// Get frame
 			frame, ok := cam.GetFrame()
 			if !ok {
 				continue
@@ -267,28 +245,61 @@ func (cs *ChallengeSystem) detectTurn(
 				continue
 			}
 
-			// In production, use head pose estimation
-			// For PoC, use face position shift as proxy
+			detections, err := detector(img)
+			if err != nil || len(detections) == 0 {
+				continue
+			}
 
-			// Detect face (simplified)
-			_ = img
+			det := detections[0]
+			if len(det.Landmarks) < 3 {
+				continue
+			}
 
-			// Check if face has moved sufficiently
-			// In production, use actual pose estimation
-			currentX := initialX // Would be actual detection
-			deltaX := currentX - initialX
+			currentYaw := calculateYaw(det.Landmarks)
 
-			// Normalize by face width
-			normalizedDelta := deltaX / initialWidth
+			// Yaw: nose_x - eye_center_x
+			// Positive = Looking Right (camera perspective) -> User turning Left?
+			// Wait, if User turns LEFT, their nose moves LEFT in image (smaller X).
+			// If User turns RIGHT, their nose moves RIGHT in image (larger X).
+			//
+			// calculateYaw returns (nose.x - eyeCenter.x).
+			// Center is 0.
+			// Turn Left (nose moves left) -> Yaw becomes more negative.
+			// Turn Right (nose moves right) -> Yaw becomes more positive.
 
-			if direction == ChallengeTurnLeft && normalizedDelta < -0.3 {
+			eyeDist := distance(det.Landmarks[0], det.Landmarks[1])
+			if eyeDist == 0 {
+				continue
+			}
+
+			deltaYaw := (currentYaw - initialYaw) / eyeDist
+
+			if direction == ChallengeTurnLeft && deltaYaw < -0.2 { // Turned Left
 				return true
 			}
-			if direction == ChallengeTurnRight && normalizedDelta > 0.3 {
+			if direction == ChallengeTurnRight && deltaYaw > 0.2 { // Turned Right
 				return true
 			}
 		}
 	}
+}
+
+func calculateYaw(landmarks [][2]float32) float64 {
+	leftEye := landmarks[0]
+	rightEye := landmarks[1]
+	nose := landmarks[2]
+
+	eyeCenterX := (leftEye[0] + rightEye[0]) / 2
+	return float64(nose[0] - eyeCenterX)
+}
+
+func calculatePitch(landmarks [][2]float32) float64 {
+	leftEye := landmarks[0]
+	rightEye := landmarks[1]
+	nose := landmarks[2]
+
+	eyeCenterY := (leftEye[1] + rightEye[1]) / 2
+	return float64(nose[1] - eyeCenterY)
 }
 
 // HeadPose represents head pose estimation

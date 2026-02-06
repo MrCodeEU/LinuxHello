@@ -1,5 +1,4 @@
-// facelock-test - Test tool for LinuxHello authentication
-package main
+package cli
 
 import (
 	"context"
@@ -15,17 +14,16 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func main() {
-	var (
-		username   = flag.String("user", "", "Specific user to authenticate (optional)")
-		configPath = flag.String("config", "", "Path to configuration file")
-		verbose    = flag.Bool("verbose", false, "Enable verbose output")
-		continuous = flag.Bool("continuous", false, "Continuous authentication mode")
-		showFPS    = flag.Bool("fps", false, "Show frames per second")
-	)
-	flag.Parse()
+// RunTest runs the authentication test CLI
+func RunTest(args []string) {
+	fs := flag.NewFlagSet("test", flag.ExitOnError)
+	username := fs.String("user", "", "Specific user to authenticate (optional)")
+	configPath := fs.String("config", "", "Path to configuration file")
+	verbose := fs.Bool("verbose", false, "Enable verbose output")
+	continuous := fs.Bool("continuous", false, "Continuous authentication mode")
+	showFPS := fs.Bool("fps", false, "Show frames per second")
+	_ = fs.Parse(args)
 
-	// Setup logger
 	logger := logrus.New()
 	if *verbose {
 		logger.SetLevel(logrus.DebugLevel)
@@ -33,14 +31,12 @@ func main() {
 		logger.SetLevel(logrus.InfoLevel)
 	}
 
-	// Load configuration
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logger.Warnf("Using default configuration: %v", err)
 		cfg = config.DefaultConfig()
 	}
 
-	// Handle continuous mode
 	if *continuous {
 		if err := runContinuousMode(cfg, *username, *showFPS, logger); err != nil {
 			logger.Fatalf("Continuous mode failed: %v", err)
@@ -48,7 +44,6 @@ func main() {
 		return
 	}
 
-	// Single authentication attempt
 	if err := runSingleAuth(cfg, *username, logger); err != nil {
 		logger.Fatalf("Authentication test failed: %v", err)
 	}
@@ -58,7 +53,6 @@ func runSingleAuth(cfg *config.Config, username string, logger *logrus.Logger) e
 	fmt.Println("LinuxHello Authentication Test")
 	fmt.Println("===========================")
 
-	// Create authentication engine
 	engine, err := auth.NewEngine(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create engine: %w", err)
@@ -69,20 +63,17 @@ func runSingleAuth(cfg *config.Config, username string, logger *logrus.Logger) e
 		}
 	}()
 
-	// Initialize camera
 	fmt.Println("Initializing camera...")
 	if err := engine.InitializeCamera(); err != nil {
 		return fmt.Errorf("failed to initialize camera: %w", err)
 	}
 
-	// Start capture
 	if err := engine.Start(); err != nil {
 		return fmt.Errorf("failed to start camera: %w", err)
 	}
 
 	fmt.Println("Camera ready.")
 
-	// Instructions
 	fmt.Println("Instructions:")
 	fmt.Println("-------------")
 	fmt.Println("1. Position your face in front of the camera")
@@ -90,12 +81,10 @@ func runSingleAuth(cfg *config.Config, username string, logger *logrus.Logger) e
 	fmt.Println("3. Keep your face steady")
 	fmt.Println()
 
-	// Wait for user to be ready
 	fmt.Print("Press Enter to start authentication...")
 	_, _ = fmt.Scanln()
 	fmt.Println()
 
-	// Perform authentication
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -113,7 +102,6 @@ func runSingleAuth(cfg *config.Config, username string, logger *logrus.Logger) e
 		return fmt.Errorf("authentication error: %w", err)
 	}
 
-	// Display results
 	fmt.Println()
 	fmt.Println("Authentication Result")
 	fmt.Println("====================")
@@ -153,7 +141,6 @@ func runContinuousMode(cfg *config.Config, username string, showFPS bool, logger
 
 	fmt.Println("Camera ready. Starting continuous authentication...")
 
-	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -189,20 +176,17 @@ func setupAuthenticationEngine(cfg *config.Config, logger *logrus.Logger) (*auth
 	fmt.Println("=======================================")
 	fmt.Println("Press Ctrl+C to exit")
 
-	// Create authentication engine
 	engine, err := auth.NewEngine(cfg, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create engine: %w", err)
 	}
 
-	// Initialize camera
 	fmt.Println("Initializing camera...")
 	if err := engine.InitializeCamera(); err != nil {
 		_ = engine.Close()
 		return nil, fmt.Errorf("failed to initialize camera: %w", err)
 	}
 
-	// Start capture
 	if err := engine.Start(); err != nil {
 		_ = engine.Close()
 		return nil, fmt.Errorf("failed to start camera: %w", err)
@@ -234,7 +218,7 @@ func processContinuousFrame(engine *auth.Engine, username string, showFPS bool, 
 			result.User.Username, result.Confidence, result.ProcessingTime)
 	} else {
 		stats.failures++
-		if stats.attempts%10 == 0 { // Only show some failures to reduce noise
+		if stats.attempts%10 == 0 {
 			if result != nil {
 				fmt.Printf("[✗] Failed | Time: %v\n", result.ProcessingTime)
 			} else {
@@ -245,7 +229,6 @@ func processContinuousFrame(engine *auth.Engine, username string, showFPS bool, 
 
 	stats.framesProcessed++
 
-	// FPS display
 	if showFPS && time.Since(stats.lastFPSUpdate) >= time.Second {
 		fps := float64(stats.framesProcessed) / time.Since(stats.lastFPSUpdate).Seconds()
 		fmt.Printf("[FPS: %.1f] ", fps)
@@ -258,10 +241,10 @@ func printStats(attempts, successes, failures int, totalTime time.Duration) {
 	fmt.Println("\nSession Statistics")
 	fmt.Println("==================")
 	fmt.Printf("Total attempts: %d\n", attempts)
-	fmt.Printf("Successful: %d (%.1f%%)\n", successes, float64(successes)/float64(attempts)*100)
-	fmt.Printf("Failed: %d (%.1f%%)\n", failures, float64(failures)/float64(attempts)*100)
 
 	if attempts > 0 {
+		fmt.Printf("Successful: %d (%.1f%%)\n", successes, float64(successes)/float64(attempts)*100)
+		fmt.Printf("Failed: %d (%.1f%%)\n", failures, float64(failures)/float64(attempts)*100)
 		avgTime := totalTime / time.Duration(attempts)
 		fmt.Printf("Average processing time: %v\n", avgTime)
 	}

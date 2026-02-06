@@ -1,18 +1,8 @@
-[Unit]
-Description=LinuxHello Management GUI
-After=network.target linuxhello-inference.service
-
-[Service]
-Type=simple
-User=root
-# The GUI is installed to /usr/local/bin by Makefile
-ExecStart=/usr/local/bin/linuxhello-gui -config /etc/linuxhello/linuxhello.conf
-Restart=on-failure
-RestartSec=5s
-
-# Ensure it can access the camera and PAM
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
-AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
-
-[Install]
-WantedBy=multi-user.target
+# NOTE: The GUI is now part of the main linuxhello binary (Wails desktop app)
+# that requires a display server (X11/Wayland). It cannot run as a headless
+# systemd service.
+#
+# To launch the GUI, run: sudo linuxhello
+# Or use the desktop launcher: LinuxHello (in your applications menu)
+#
+# This service file is kept for reference only and should not be enabled.

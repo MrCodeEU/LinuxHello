@@ -188,7 +188,7 @@ func (c *Camera) performSafeShutdown() {
 
 	// 2. Wait for our local capture loop to exit
 	c.wg.Wait()
-	
+
 	// 3. Drain the go4vl channel to ensure the external goroutine finishes
 	// The go4vl library should close the channel when context is done.
 	// We drain it to prevent 'send on closed channel' panics if we were to close the device too early.
@@ -200,14 +200,14 @@ func (c *Camera) performSafeShutdown() {
 		}
 		close(done)
 	}()
-	
+
 	select {
 	case <-done:
 		// Channel closed naturally
 	case <-time.After(500 * time.Millisecond):
 		c.logger.Infof("Timed out waiting for camera channel to close")
 	}
-	
+
 	// 4. Now it's safe(r) to stop and close the device
 	c.stopDevice()
 	c.closeDevice()

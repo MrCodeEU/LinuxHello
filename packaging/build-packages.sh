@@ -74,14 +74,15 @@ Description: Face authentication system for Linux
  to provide secure, contactless authentication using facial recognition.
 EOF
     
-    # Build binaries (simplified - assumes they're already built)
+    # Install binaries (assumes they're already built)
     if [ -f "bin/linuxhello" ]; then
-        cp bin/* "$DEB_DIR/usr/bin/" 2>/dev/null || true
+        cp bin/linuxhello "$DEB_DIR/usr/bin/"
+        cp bin/pam_linuxhello.so "$DEB_DIR/usr/lib/security/" 2>/dev/null || true
         cp configs/linuxhello.conf "$DEB_DIR/etc/linuxhello/"
-        cp systemd/*.service "$DEB_DIR/etc/systemd/system/"
+        cp systemd/linuxhello-inference.service "$DEB_DIR/etc/systemd/system/"
         cp scripts/linuxhello-pam "$DEB_DIR/usr/bin/"
         cp -r python-service "$DEB_DIR/usr/share/linuxhello/"
-        cp -r web-ui/dist "$DEB_DIR/usr/share/linuxhello/web-ui" 2>/dev/null || true
+        # Note: frontend is embedded in linuxhello binary, no separate install needed
         
         # Build DEB
         dpkg-deb --build "$DEB_DIR" "$PACKAGE_DIR/linuxhello_${VERSION}_amd64.deb"
@@ -103,7 +104,7 @@ if [ -f "bin/linuxhello" ]; then
     cp -r scripts "$TARBALL_DIR/"
     cp -r systemd "$TARBALL_DIR/"
     cp -r python-service "$TARBALL_DIR/"
-    [ -d "web-ui/dist" ] && cp -r web-ui/dist "$TARBALL_DIR/web-ui"
+    # Note: frontend is embedded in linuxhello binary
     cp README.md Makefile "$TARBALL_DIR/"
     
     # Create install script
@@ -126,11 +127,11 @@ install -d /etc/linuxhello
 install -d /opt/linuxhello
 install -d /var/lib/linuxhello
 
-install -m 755 bin/* /usr/local/bin/
+install -m 755 bin/linuxhello /usr/local/bin/
+install -m 755 bin/pam_linuxhello.so /usr/local/lib/security/ 2>/dev/null || true
 install -m 644 configs/linuxhello.conf /etc/linuxhello/
 cp -r python-service /opt/linuxhello/
-[ -d web-ui ] && cp -r web-ui /opt/linuxhello/
-cp systemd/*.service /etc/systemd/system/
+cp systemd/linuxhello-inference.service /etc/systemd/system/
 
 # Set up Python environment
 cd /opt/linuxhello/python-service
@@ -140,8 +141,8 @@ python3 -m venv venv
 
 systemctl daemon-reload
 echo "Installation complete!"
-echo "Start with: systemctl enable --now linuxhello-inference linuxhello-gui"
-echo "Access GUI at: http://localhost:8080"
+echo "Start inference: systemctl enable --now linuxhello-inference"
+echo "Launch GUI: sudo linuxhello"
 EOF
     chmod +x "$TARBALL_DIR/install.sh"
     

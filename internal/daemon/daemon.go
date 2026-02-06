@@ -1,4 +1,5 @@
-package main
+// Package daemon provides the background daemon functionality for LinuxHello
+package daemon
 
 import (
 	"context"
@@ -15,22 +16,19 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func main() {
-	var (
-		configPath = flag.String("config", "/etc/linuxhello/linuxhello.conf", "Path to configuration file")
-		verbose    = flag.Bool("verbose", false, "Enable verbose logging")
-		version    = flag.Bool("version", false, "Show version information")
-		daemon     = flag.Bool("daemon", false, "Run as daemon (background service)")
-	)
-	flag.Parse()
+// Run starts the daemon with the given arguments
+func Run(args []string) {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
+	configPath := fs.String("config", "/etc/linuxhello/linuxhello.conf", "Path to configuration file")
+	verbose := fs.Bool("verbose", false, "Enable verbose logging")
+	version := fs.Bool("version", false, "Show version information")
+	_ = fs.Parse(args)
 
-	// Version info
 	if *version {
 		printVersion()
 		return
 	}
 
-	// Setup logger
 	logger := logrus.New()
 	if *verbose {
 		logger.SetLevel(logrus.DebugLevel)
@@ -38,29 +36,18 @@ func main() {
 		logger.SetLevel(logrus.InfoLevel)
 	}
 
-	// Load configuration
 	cfg := loadConfiguration(*configPath, logger)
 
-	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		logger.Fatalf("Invalid configuration: %v", err)
 	}
 
-	// Setup signal handling
 	ctx, cancel := setupSignalHandling(logger, *configPath, &cfg)
 	defer cancel()
 
-	// Run daemon or one-shot mode
-	if *daemon {
-		logger.Info("Starting LinuxHello daemon...")
-		if err := runDaemon(ctx, cfg, logger); err != nil {
-			logger.Fatalf("Daemon error: %v", err)
-		}
-	} else {
-		logger.Info("Running LinuxHello in one-shot mode")
-		if err := runOneShot(ctx, cfg, logger); err != nil {
-			logger.Fatalf("One-shot error: %v", err)
-		}
+	logger.Info("Starting LinuxHello daemon...")
+	if err := runDaemon(ctx, cfg, logger); err != nil {
+		logger.Fatalf("Daemon error: %v", err)
 	}
 }
 
@@ -88,7 +75,6 @@ func setupSignalHandling(logger *logrus.Logger, configPath string, cfg **config.
 				cancel()
 			case syscall.SIGHUP:
 				logger.Info("Received reload signal (SIGHUP)")
-				// Reload configuration
 				newCfg, err := config.Load(configPath)
 				if err != nil {
 					logger.Errorf("Failed to reload config: %v", err)
@@ -108,7 +94,6 @@ func setupSignalHandling(logger *logrus.Logger, configPath string, cfg **config.
 func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) error {
 	logger.Info("Starting LinuxHello daemon...")
 
-	// Initialize authentication engine
 	engine, err := auth.NewEngine(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create auth engine: %w", err)
@@ -119,14 +104,12 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) e
 		}
 	}()
 
-	// Create Unix socket for IPC
-	socketPath := "/var/run/facelock/facelock.sock"
-	if err := os.MkdirAll("/var/run/facelock", 0755); err != nil {
+	socketPath := "/var/run/linuxhello/linuxhello.sock"
+	if err := os.MkdirAll("/var/run/linuxhello", 0755); err != nil {
 		logger.Warnf("Failed to create socket directory: %v", err)
-		socketPath = "/tmp/facelock.sock"
+		socketPath = "/tmp/linuxhello.sock"
 	}
 
-	// Remove existing socket if it exists
 	_ = os.Remove(socketPath)
 
 	listener, err := net.Listen("unix", socketPath)
@@ -140,14 +123,12 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) e
 	}()
 	defer func() { _ = os.Remove(socketPath) }()
 
-	// Set socket permissions
 	if err := os.Chmod(socketPath, 0660); err != nil {
 		logger.Warnf("Failed to set socket permissions: %v", err)
 	}
 
 	logger.Infof("Daemon listening on %s", socketPath)
 
-	// Accept connections in a goroutine
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -161,12 +142,10 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) e
 				}
 			}
 
-			// Handle connection in separate goroutine
 			go handleConnection(conn, engine, logger)
 		}
 	}()
 
-	// Wait for shutdown signal
 	<-ctx.Done()
 	logger.Info("Daemon shutting down...")
 
@@ -176,7 +155,6 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *logrus.Logger) e
 func handleConnection(conn net.Conn, engine *auth.Engine, logger *logrus.Logger) {
 	defer func() { _ = conn.Close() }()
 
-	// Simple protocol: read username, perform auth, write result
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
 	if err != nil {
@@ -187,7 +165,6 @@ func handleConnection(conn net.Conn, engine *auth.Engine, logger *logrus.Logger)
 	username := string(buf[:n])
 	logger.Infof("Authentication request for user: %s", username)
 
-	// Perform authentication
 	authCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -204,28 +181,9 @@ func handleConnection(conn net.Conn, engine *auth.Engine, logger *logrus.Logger)
 	}
 }
 
-func runOneShot(ctx context.Context, cfg *config.Config, logger *logrus.Logger) error {
-	// One-shot mode is primarily for testing
-	// The actual authentication happens through PAM
-	logger.Info("One-shot mode - use facelock-test for authentication testing")
-	return nil
-}
-
 func printVersion() {
-	fmt.Println("LinuxHello - Linux Face Recognition System")
-	fmt.Println("========================================")
-	fmt.Println("Version: 0.1.0 (PoC)")
+	fmt.Println("LinuxHello Daemon")
+	fmt.Println("=================")
+	fmt.Println("Version: 1.3.4")
 	fmt.Println("License: MIT")
-	fmt.Println()
-	fmt.Println("Features:")
-	fmt.Println("  - SCRFD face detection")
-	fmt.Println("  - ArcFace recognition")
-	fmt.Println("  - Depth-based liveness detection")
-	fmt.Println("  - Challenge-response authentication")
-	fmt.Println("  - PAM integration")
-	fmt.Println()
-	fmt.Println("Hardware Support:")
-	fmt.Println("  - V4L2 cameras (RGB)")
-	fmt.Println("  - IR cameras")
-	fmt.Println("  - Intel RealSense depth cameras")
 }

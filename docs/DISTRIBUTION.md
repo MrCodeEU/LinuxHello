@@ -48,15 +48,16 @@ The project includes automated builds that create RPM packages on every tag:
 
 After installing the RPM package, users can:
 
-1. **Start services:**
+1. **Start inference service:**
    ```bash
-   sudo systemctl start linuxhello-inference linuxhello-gui
-   sudo systemctl enable linuxhello-inference linuxhello-gui
+   sudo systemctl start linuxhello-inference
+   sudo systemctl enable linuxhello-inference
    ```
 
-2. **Access the GUI:**
-   - Open http://localhost:8080
-   - The web interface provides everything needed
+2. **Launch the desktop GUI:**
+   ```bash
+   sudo linuxhello
+   ```
 
 3. **Complete setup through GUI:**
    - **Enroll Face tab:** Enroll user faces
@@ -67,9 +68,8 @@ After installing the RPM package, users can:
 ## Package Contents
 
 The RPM includes:
-- All binaries (`linuxhello`, `linuxhello-enroll`, `linuxhello-gui`, etc.)
+- Single `linuxhello` binary (Wails app with GUI, daemon, enroll, and test subcommands)
 - PAM module (`pam_linuxhello.so`)
-- Web management interface
 - Python inference service
 - Systemd service files
 - Configuration files

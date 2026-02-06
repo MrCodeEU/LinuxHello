@@ -26,13 +26,13 @@ A Windows Hello-style face authentication system for Linux that provides:
 ```bash
 wget https://github.com/MrCodeEU/LinuxHello/releases/latest/download/linuxhello-*.rpm
 sudo dnf install linuxhello-*.rpm
-sudo systemctl enable --now linuxhello-inference linuxhello-gui
+sudo systemctl enable --now linuxhello-inference
 ```
 
-### Quick Setup  
+### Quick Setup
 ```bash
-# 1. Open web interface
-firefox http://localhost:8080
+# 1. Launch the desktop GUI
+sudo linuxhello
 
 # 2. Enroll your face in the GUI, then:
 sudo linuxhello-pam enable sudo

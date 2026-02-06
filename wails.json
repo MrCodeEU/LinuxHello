@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "linuxhello",
+  "outputfilename": "linuxhello",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "LinuxHello",
+    "email": ""
+  },
+  "info": {
+    "companyName": "LinuxHello",
+    "productName": "LinuxHello",
+    "productVersion": "1.3.4",
+    "copyright": "MIT License",
+    "comments": "Linux Face Authentication System"
+  }
+}

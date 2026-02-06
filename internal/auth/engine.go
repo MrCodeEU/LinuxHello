@@ -27,13 +27,14 @@ const errEncodeImage = "failed to encode image: %w"
 
 // Result represents an authentication result
 type Result struct {
-	Success         bool
-	User            *embedding.User
-	Confidence      float64
-	LivenessPassed  bool
-	ChallengePassed bool
-	Error           error
-	ProcessingTime  time.Duration
+	Success              bool
+	User                 *embedding.User
+	Confidence           float64
+	LivenessPassed       bool
+	ChallengePassed      bool
+	ChallengeDescription string
+	Error                error
+	ProcessingTime       time.Duration
 }
 
 // DebugInfo contains debug information for authentication testing
@@ -270,13 +271,14 @@ func (e *Engine) performLivenessCheck(img image.Image, detection models.Detectio
 // performChallenge handles the challenge-response step
 func (e *Engine) performChallenge(ctx context.Context, detection models.Detection, result *Result) error {
 	if e.config.Challenge.Enabled {
-		passed, err := e.runChallenge(ctx, detection)
+		passed, desc, err := e.runChallenge(ctx, detection)
 		result.ChallengePassed = passed
+		result.ChallengeDescription = desc
 		if err != nil {
 			e.logger.Warnf("Challenge failed: %v", err)
 		}
 		if !passed {
-			result.Error = fmt.Errorf("challenge-response failed")
+			result.Error = fmt.Errorf("challenge-response failed: %s", desc)
 			return result.Error
 		}
 	} else {
@@ -404,9 +406,9 @@ func (e *Engine) verifyLiveness(img image.Image, detection models.Detection) (bo
 	return livenessPassed, nil
 }
 
-func (e *Engine) runChallenge(ctx context.Context, detection models.Detection) (bool, error) {
+func (e *Engine) runChallenge(ctx context.Context, detection models.Detection) (bool, string, error) {
 	if e.challengeSystem == nil {
-		return true, nil
+		return true, "", nil
 	}
 
 	// Generate challenge
@@ -418,9 +420,14 @@ func (e *Engine) runChallenge(ctx context.Context, detection models.Detection) (
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	completed := e.challengeSystem.WaitForChallenge(timeoutCtx, challenge, e.camera, detection)
+	// Create detector callback
+	detector := func(img image.Image) ([]models.Detection, error) {
+		return e.DetectFaces(img)
+	}
 
-	return completed, nil
+	completed := e.challengeSystem.WaitForChallenge(timeoutCtx, challenge, e.camera, detection, detector)
+
+	return completed, challenge.Description, nil
 }
 
 func (e *Engine) identifyFace(img image.Image, detection models.Detection) (*embedding.User, float64, error) {
@@ -488,6 +495,16 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		result.LivenessPassed = true
 	}
 
+	// Challenge-Response
+	if err := e.performChallenge(ctx, detection, result); err != nil {
+		result.ProcessingTime = time.Since(startTime)
+		_ = e.embeddingStore.RecordAuth(
+			user.ID, username, false, 0,
+			result.LivenessPassed, false, "challenge failed",
+		)
+		return result, nil
+	}
+
 	// Extract embedding
 	embedding, err := e.ExtractEmbedding(img, detection)
 	if err != nil {
@@ -511,7 +528,7 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		result.Error = fmt.Errorf("face does not match (confidence: %.3f)", bestScore)
 		_ = e.embeddingStore.RecordAuth(
 			user.ID, username, false, bestScore,
-			result.LivenessPassed, false, "face mismatch",
+			result.LivenessPassed, result.ChallengePassed, "face mismatch",
 		)
 		return result, nil
 	}
@@ -605,14 +622,16 @@ func (e *Engine) addDetectionDebugInfo(img image.Image, detection models.Detecti
 }
 
 // performDebugAuthentication performs the authentication steps for debug mode
-func (e *Engine) performDebugAuthentication(_ context.Context, img image.Image, detection models.Detection, result *Result) error {
+func (e *Engine) performDebugAuthentication(ctx context.Context, img image.Image, detection models.Detection, result *Result) error {
 	// Liveness Check
 	if err := e.performLivenessCheck(img, detection, result); err != nil {
 		return err
 	}
 
-	// Challenge-Response (skip for debug test)
-	result.ChallengePassed = true
+	// Challenge-Response
+	if err := e.performChallenge(ctx, detection, result); err != nil {
+		return err
+	}
 
 	// Identification
 	return e.performIdentification(img, detection, result)

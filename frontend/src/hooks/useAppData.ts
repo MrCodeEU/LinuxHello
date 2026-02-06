@@ -1,25 +1,9 @@
 import { useState, useCallback } from 'react'
+import { getUsers, getConfig, getPAMStatus, getServiceStatus } from '../wails'
+import type { AppConfig, UserResponse } from '../wails'
 
-interface User {
-  username: string
-  samples: number
-  last_used?: string
-  active: boolean
-}
-
-interface AppConfig {
-  inference: { address: string; timeout: number }
-  camera: { device: string; ir_device: string; width: number; height: number; fps: number; pixel_format: string; auto_exposure: boolean }
-  recognition: { similarity_threshold: number; enrollment_samples: number }
-  liveness: { enabled: boolean; confidence_threshold: number }
-  auth: { max_attempts: number; lockout_duration: number; fallback_enabled: boolean }
-  challenge: { enabled: boolean; challenge_types: string[]; max_challenges: number; timeout: number }
-  lockout: { enabled: boolean; max_failures: number; lockout_duration: number; progressive_lockout: boolean }
-  storage: { data_dir: string; database_path: string }
-  logging: { level: string }
-}
-
-export type { User, AppConfig }
+export type User = UserResponse
+export type { AppConfig }
 
 export const useAppData = () => {
   const [users, setUsers] = useState<User[]>([])
@@ -29,8 +13,8 @@ export const useAppData = () => {
 
   const fetchUsers = useCallback(async () => {
     try {
-      const res = await fetch('/api/users')
-      if (res.ok) setUsers(await res.json())
+      const result = await getUsers()
+      setUsers(result || [])
     } catch (e) {
       console.error("Failed to fetch users", e)
     }
@@ -38,49 +22,45 @@ export const useAppData = () => {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch('/api/config')
-      if (res.ok) setConfig(await res.json())
+      const result = await getConfig()
+      setConfig(result)
     } catch (e) {
       console.error("Failed to fetch config", e)
     }
   }, [])
 
   const fetchData = useCallback(async () => {
-    try {
-      const [uRes, cRes, pRes, sRes] = await Promise.all([
-        fetch('/api/users'),
-        fetch('/api/config'),
-        fetch('/api/pam'),
-        fetch('/api/service')
-      ])
-      if (uRes.ok) setUsers(await uRes.json())
-      if (cRes.ok) setConfig(await cRes.json())
-      if (pRes.ok) setPamStatus(await pRes.text())
-      if (sRes.ok) setServiceInfo(await sRes.json())
-    } catch (e) {
-      console.error("Failed to fetch data", e)
-    }
+    const results = await Promise.allSettled([
+      getUsers(),
+      getConfig(),
+      getPAMStatus(),
+      getServiceStatus()
+    ])
+    if (results[0].status === 'fulfilled') setUsers(results[0].value || [])
+    if (results[1].status === 'fulfilled') setConfig(results[1].value)
+    if (results[2].status === 'fulfilled') setPamStatus(results[2].value)
+    if (results[3].status === 'fulfilled') setServiceInfo(results[3].value)
   }, [])
 
   const fetchServiceStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/service')
-      if (res.ok) setServiceInfo(await res.json())
+      const result = await getServiceStatus()
+      setServiceInfo(result)
     } catch (e) {
       console.error("Failed to fetch service status", e)
     }
   }, [])
 
-  return { 
-    users, 
-    setUsers, 
-    config, 
-    setConfig, 
-    pamStatus, 
-    serviceInfo, 
+  return {
+    users,
+    setUsers,
+    config,
+    setConfig,
+    pamStatus,
+    serviceInfo,
     fetchData,
     fetchUsers,
     fetchConfig,
-    fetchServiceStatus 
+    fetchServiceStatus
   }
 }

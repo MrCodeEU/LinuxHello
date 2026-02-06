@@ -168,11 +168,12 @@ build_project() {
     # Download Go dependencies
     go mod download
     
-    # Build binaries
-    go build -o bin/linuxhello ./cmd/linuxhello
-    go build -o bin/linuxhello-enroll ./cmd/linuxhello-enroll
-    go build -o bin/linuxhello-test ./cmd/linuxhello-test
-    
+    # Build frontend assets
+    cd frontend && npm install && npm run build && cd ..
+
+    # Build single binary (Wails app with all subcommands)
+    go build -tags desktop,production -o bin/linuxhello .
+
     # Build PAM module (requires CGO)
     CGO_CFLAGS="-I/usr/include" \
     CGO_LDFLAGS="-lpam -lpam_misc" \
@@ -195,8 +196,6 @@ install_files() {
     
     # Install binaries
     install -m 755 "$PROJECT_ROOT/bin/linuxhello" "$BINDIR/"
-    install -m 755 "$PROJECT_ROOT/bin/linuxhello-enroll" "$BINDIR/"
-    install -m 755 "$PROJECT_ROOT/bin/linuxhello-test" "$BINDIR/"
     
     # Install PAM module
     install -m 755 "$PROJECT_ROOT/bin/pam_linuxhello.so" "$PAMDIR/"
@@ -252,10 +251,10 @@ print_instructions() {
     echo "   (Log out and back in for changes to take effect)"
     echo ""
     echo "3. Enroll your face:"
-    echo "   linuxhello-enroll -user \$USER"
+    echo "   sudo linuxhello enroll -user \$USER"
     echo ""
     echo "4. Test authentication:"
-    echo "   linuxhello-test"
+    echo "   sudo linuxhello test"
     echo ""
     echo "5. Enable PAM integration (optional):"
     echo "   Edit /etc/pam.d/common-auth or /etc/pam.d/system-auth"
@@ -268,7 +267,7 @@ print_instructions() {
     echo -e "${YELLOW}Warning: Test thoroughly before enabling PAM integration!${NC}"
     echo "A misconfigured PAM can lock you out of your system."
     echo ""
-    echo "For help: linuxhello-enroll -help"
+    echo "For help: linuxhello --help"
     echo "For issues: https://github.com/linuxhello/linuxhello/issues"
 }
 
@@ -277,8 +276,6 @@ uninstall() {
     echo -e "${YELLOW}Uninstalling LinuxHello...${NC}"
     
     rm -f "$BINDIR/linuxhello"
-    rm -f "$BINDIR/linuxhello-enroll"
-    rm -f "$BINDIR/linuxhello-test"
     rm -f "$PAMDIR/pam_linuxhello.so"
     
     echo -e "${YELLOW}Note: Configuration files and data were not removed.${NC}"

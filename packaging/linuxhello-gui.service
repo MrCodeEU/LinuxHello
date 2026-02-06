@@ -1,22 +1,8 @@
-[Unit]
-Description=LinuxHello Management GUI
-After=network.target linuxhello-inference.service
-Wants=linuxhello-inference.service
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/usr/share/linuxhello
-ExecStart=/usr/bin/linuxhello-gui
-Restart=on-failure
-RestartSec=5s
-
-# Security settings
-NoNewPrivileges=false
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/linuxhello /var/log /etc/pam.d
-
-[Install]
-WantedBy=multi-user.target
+# NOTE: The GUI is now part of the main linuxhello binary (Wails desktop app)
+# that requires a display server (X11/Wayland). It cannot run as a headless
+# systemd service.
+#
+# To launch the GUI, run: sudo linuxhello
+# Or use the desktop launcher: LinuxHello (in your applications menu)
+#
+# This service file is kept for reference only and should not be enabled.

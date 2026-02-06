@@ -1,12 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { FileText, Download, RefreshCw } from 'lucide-react'
-
-interface LogEntry {
-  timestamp: string
-  level: string
-  message: string
-  component?: string
-}
+import { getLogs, downloadLogs as wailsDownloadLogs } from '../wails'
+import type { LogEntry } from '../wails'
 
 export const LogsTab: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -16,11 +11,8 @@ export const LogsTab: React.FC = () => {
   const fetchLogs = async () => {
     setIsRefreshing(true)
     try {
-      const res = await fetch('/api/logs')
-      if (res.ok) {
-        const logData = await res.json()
-        setLogs(logData)
-      }
+      const logData = await getLogs(100)
+      setLogs(logData || [])
     } catch (error) {
       console.error('Failed to fetch logs:', error)
     } finally {
@@ -34,7 +26,7 @@ export const LogsTab: React.FC = () => {
     return () => clearInterval(interval)
   }, [])
 
-  const filteredLogs = logs.filter(log => 
+  const filteredLogs = logs.filter(log =>
     selectedLevel === 'all' || log.level.toLowerCase() === selectedLevel
   )
 
@@ -50,18 +42,16 @@ export const LogsTab: React.FC = () => {
 
   const downloadLogs = async () => {
     try {
-      const res = await fetch('/api/logs/download')
-      if (res.ok) {
-        const blob = await res.blob()
-        const url = window.URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `linuxhello-logs-${new Date().toISOString().slice(0, 10)}.log`
-        document.body.appendChild(a)
-        a.click()
-        window.URL.revokeObjectURL(url)
-        document.body.removeChild(a)
-      }
+      const content = await wailsDownloadLogs()
+      const blob = new Blob([content], { type: 'text/plain' })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `linuxhello-logs-${new Date().toISOString().slice(0, 10)}.log`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
     } catch (error) {
       console.error('Failed to download logs:', error)
     }
@@ -109,7 +99,7 @@ export const LogsTab: React.FC = () => {
           <h3 className="text-lg font-medium text-gray-200">Recent Activity</h3>
           <span className="text-sm text-gray-400">{filteredLogs.length} entries</span>
         </div>
-        
+
         <div className="max-h-96 overflow-y-auto">
           {filteredLogs.length > 0 ? (
             <div className="divide-y divide-neutral-700">

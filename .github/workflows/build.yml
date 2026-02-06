@@ -27,6 +27,13 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION_STABLE }}
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -34,7 +41,11 @@ jobs:
             libv4l-dev \
             libpam0g-dev \
             libsqlite3-dev \
+            libwebkit2gtk-4.0-dev \
             pkg-config
+
+      - name: Build frontend assets
+        run: cd frontend && npm ci && npm run build
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -76,6 +87,9 @@ jobs:
             libv4l-dev \
             libpam0g-dev \
             libsqlite3-dev \
+            libwebkit2gtk-4.0-dev \
+            nodejs \
+            npm \
             pkg-config \
             wget \
             ca-certificates
@@ -88,11 +102,11 @@ jobs:
           cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
           ldconfig
 
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
       - name: Build
-        run: |
-          go build -v ./cmd/linuxhello
-          go build -v ./cmd/linuxhello-enroll
-          go build -v ./cmd/linuxhello-test
+        run: go build -v -tags desktop,production .
 
       - name: Run tests
         run: go test -v ./...
@@ -119,6 +133,9 @@ jobs:
             libv4l-devel \
             pam-devel \
             sqlite-devel \
+            webkit2gtk4.0-devel \
+            nodejs \
+            npm \
             pkg-config \
             wget \
             tar
@@ -131,11 +148,11 @@ jobs:
           cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
           ldconfig
 
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
       - name: Build
-        run: |
-          go build -v ./cmd/linuxhello
-          go build -v ./cmd/linuxhello-enroll
-          go build -v ./cmd/linuxhello-test
+        run: go build -v -tags desktop,production .
 
   # Arch Linux build
   build-arch:
@@ -159,6 +176,9 @@ jobs:
             v4l-utils \
             pam \
             sqlite \
+            webkit2gtk \
+            nodejs \
+            npm \
             pkg-config \
             wget \
             tar
@@ -170,11 +190,11 @@ jobs:
           cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
           cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
 
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
       - name: Build
-        run: |
-          go build -v ./cmd/linuxhello
-          go build -v ./cmd/linuxhello-enroll
-          go build -v ./cmd/linuxhello-test
+        run: go build -v -tags desktop,production .
 
   # Release job with proper packaging
   release:
@@ -202,7 +222,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: web-ui/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install system dependencies
         run: |
@@ -225,7 +245,7 @@ jobs:
 
       - name: Build web frontend
         run: |
-          cd web-ui
+          cd frontend
           npm ci --omit=dev
           npm run build
           cd ..
@@ -233,14 +253,11 @@ jobs:
       - name: Build Go binaries
         run: |
           mkdir -p bin
-          
-          # Build main binaries
+
+          # Build single binary (Wails app with all subcommands)
           export CGO_ENABLED=1
-          go build -ldflags="-s -w" -o bin/linuxhello ./cmd/linuxhello
-          go build -ldflags="-s -w" -o bin/linuxhello-enroll ./cmd/linuxhello-enroll
-          go build -ldflags="-s -w" -o bin/linuxhello-test ./cmd/linuxhello-test
-          go build -ldflags="-s -w" -o bin/linuxhello-gui ./cmd/linuxhello-gui
-          
+          go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+
           # Build PAM module
           CGO_CFLAGS="-I/usr/include" \
           CGO_LDFLAGS="-lpam -lpam_misc" \
@@ -322,21 +339,22 @@ jobs:
             sudo wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/download-models.sh
             sudo chmod +x download-models.sh && sudo ./download-models.sh
             
-            # Start services
-            sudo systemctl enable --now linuxhello-inference linuxhello-gui
-            
-            # Access GUI at http://localhost:8080
+            # Start inference service
+            sudo systemctl enable --now linuxhello-inference
+
+            # Launch the desktop GUI
+            sudo linuxhello
             ```
-            
+
             **For Debian/Ubuntu:**
             ```bash
             # Download and install DEB
             wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/linuxhello_*_amd64.deb
             sudo apt install ./linuxhello_*.deb
-            
+
             # Download models and start (same as above)
             ```
-            
+
             **Generic Installation:**
             ```bash
             # Download tarball
@@ -345,9 +363,9 @@ jobs:
             cd linuxhello-generic
             sudo ./install.sh
             ```
-            
+
             ### Usage
-            1. Open http://localhost:8080 in your browser
+            1. Launch the desktop GUI: `sudo linuxhello`
             2. Go to "Enroll Face" tab and enroll your face
             3. Go to "System & PAM" tab and enable PAM for sudo
             4. Test with `sudo ls` - it should authenticate using your face!

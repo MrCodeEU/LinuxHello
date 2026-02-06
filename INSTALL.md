@@ -27,19 +27,16 @@ sudo ./download-models.sh
 ```bash
 # Enable and start the inference service
 sudo systemctl enable --now linuxhello-inference
-
-# Enable and start the web GUI
-sudo systemctl enable --now linuxhello-gui
 ```
 
 ### 4. Set Up Face Authentication
 ```bash
-# Open the web interface
-firefox http://localhost:8080
+# Launch the desktop GUI
+sudo linuxhello
 
 # Or use the command line:
 # 1. Enroll your face
-sudo linuxhello-enroll -user $USER
+sudo linuxhello enroll -user $USER
 
 # 2. Enable PAM for sudo
 sudo linuxhello-pam enable sudo
@@ -91,8 +88,8 @@ sudo make install
 
 ## Usage
 
-### Web Interface
-- Access at `http://localhost:8080`
+### Desktop GUI
+- Launch with: `sudo linuxhello`
 - **Enroll Face**: Add your face to the system
 - **Auth Test**: Test face detection and authentication with visual debugging
 - **User Manager**: Manage enrolled users
@@ -100,36 +97,34 @@ sudo make install
 - **Configuration**: Adjust system settings
 
 ### Command Line Tools
-- `linuxhello-enroll -user USERNAME`: Enroll a user's face
-- `linuxhello-test -user USERNAME`: Test authentication
+- `linuxhello enroll -user USERNAME`: Enroll a user's face
+- `linuxhello test -user USERNAME`: Test authentication
 - `linuxhello-pam enable sudo`: Enable face auth for sudo
 - `linuxhello-pam status`: Show PAM integration status
 
 ### Services
 - `linuxhello-inference`: AI inference service (required)
-- `linuxhello-gui`: Web management interface (optional)
+- `linuxhello`: Desktop management application (launch with `sudo linuxhello`)
 
 ## Troubleshooting
 
 ### Camera Issues
 - Ensure your camera is accessible: `ls /dev/video*`
 - Check camera permissions for the linuxhello user
-- Test with: `linuxhello-test`
+- Test with: `sudo linuxhello test`
 
 ### PAM Not Working
 - Check logs: `journalctl -u linuxhello-inference`
 - Verify PAM module: `ldd /usr/lib/security/pam_linuxhello.so`
-- Test in auth test page: http://localhost:8080 → "Auth Test"
+- Test in GUI: launch `sudo linuxhello` → "Auth Test" tab
 
 ### Service Issues
 ```bash
 # Check service status
 sudo systemctl status linuxhello-inference
-sudo systemctl status linuxhello-gui
 
 # View logs
 sudo journalctl -u linuxhello-inference -f
-sudo journalctl -u linuxhello-gui -f
 ```
 
 ### Model Issues
@@ -151,8 +146,8 @@ sudo apt remove linuxhello
 ### Manual Cleanup
 ```bash
 # Stop services
-sudo systemctl stop linuxhello-inference linuxhello-gui
-sudo systemctl disable linuxhello-inference linuxhello-gui
+sudo systemctl stop linuxhello-inference
+sudo systemctl disable linuxhello-inference
 
 # Remove PAM integration
 sudo linuxhello-pam disable sudo

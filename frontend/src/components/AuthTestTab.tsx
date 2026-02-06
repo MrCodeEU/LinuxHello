@@ -16,7 +16,7 @@ export const AuthTestTab: React.FC<AuthTestTabProps> = ({
   const renderAuthResult = () => {
     if (!authTestResult) return null
 
-    const { success, username, confidence, error, processing_time } = authTestResult
+    const { success, username, confidence, error, processing_time, challenge_description } = authTestResult
 
     if (error) {
       return (
@@ -26,6 +26,9 @@ export const AuthTestTab: React.FC<AuthTestTabProps> = ({
             <span className="font-medium">Authentication Failed</span>
           </div>
           <p className="text-sm">{error}</p>
+          {challenge_description && (
+            <p className="text-sm mt-2 font-mono bg-red-950 p-2 rounded">Challenge was: {challenge_description}</p>
+          )}
         </div>
       )
     }
@@ -42,6 +45,9 @@ export const AuthTestTab: React.FC<AuthTestTabProps> = ({
             <p><strong>Confidence:</strong> {(confidence * 100).toFixed(1)}%</p>
             {processing_time && (
               <p><strong>Processing Time:</strong> {processing_time}ms</p>
+            )}
+            {challenge_description && (
+               <p><strong>Challenge Passed:</strong> {challenge_description}</p>
             )}
           </div>
         </div>

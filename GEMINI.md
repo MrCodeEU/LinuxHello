@@ -12,10 +12,10 @@
 
 ## Architecture
 The system relies on a hybrid architecture:
-1.  **Go Daemon (`cmd/linuxhello`):** The central coordinator handling auth logic, config, and IPC.
+1.  **LinuxHello Binary (`main.go` + `app.go`):** A single Wails v2 binary with subcommands: GUI (default), daemon, enroll, test. Coordinates auth logic, config, and IPC.
 2.  **Python Inference Service (`python-service`):** A gRPC server running ONNX models (SCRFD for detection, ArcFace for recognition) to perform the heavy lifting of computer vision.
 3.  **PAM Module (`pkg/pam`):** A C-shared Go library (`pam_linuxhello.so`) that hooks into the Linux authentication stack.
-4.  **Web UI (`web-ui`):** A React/Vite frontend communicating with the daemon for management tasks.
+4.  **Frontend (`frontend`):** A React/Vite frontend embedded in the linuxhello binary via Wails.
 
 ## Tech Stack
 *   **Backend:** Go (1.24+), gRPC, SQLite (auth data), CGO (PAM).
@@ -60,16 +60,16 @@ Configuration is managed via `configs/linuxhello.conf` (local dev) or `/etc/linu
 *   **Struct:** Defined in `internal/config/config.go`.
 
 ### Project Structure
-*   `cmd/` - Entry points for binaries (`linuxhello`, `linuxhello-enroll`, `linuxhello-gui`).
-*   `internal/` - Private application code (auth engine, camera handling, config).
+*   `main.go` + `app.go` - Single binary entry point (Wails v2 app with subcommands).
+*   `internal/` - Private application code (auth engine, camera handling, config, cli, daemon).
 *   `pkg/` - Library code (PAM module, shared utilities).
 *   `python-service/` - ML inference engine (Python/ONNX).
-*   `web-ui/` - React frontend source.
+*   `frontend/` - React frontend source.
 *   `models/` - Downloaded ONNX models (ArcFace, SCRFD).
 *   `scripts/` - Helper scripts for PAM management and installation.
 
 ## Development Conventions
 *   **Go:** Follows standard Go idioms. Use `make fmt` and `make vet` before committing.
 *   **Python:** Dependencies in `python-service/requirements.txt`. Use the venv created by `make setup`.
-*   **Frontend:** Modern React hooks pattern. Build with `npm run build` inside `web-ui`.
+*   **Frontend:** Modern React hooks pattern. Build with `npm run build` inside `frontend`.
 *   **Safety:** The project interacts with system security (PAM). Always test changes with `make test-auth` before enabling PAM integration system-wide to avoid lockouts.

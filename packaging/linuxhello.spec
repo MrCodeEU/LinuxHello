@@ -32,7 +32,7 @@ authentication for system login, sudo, and other services.
 Features:
 - Face detection and recognition using AI models
 - PAM integration for system authentication
-- Web-based management interface
+- Desktop management interface
 - Multi-user enrollment support
 - Liveness detection to prevent photo/video spoofing
 
@@ -40,8 +40,8 @@ Features:
 %setup -q
 
 %build
-# Build web frontend
-cd web-ui
+# Build web frontend (embedded into Wails GUI binary)
+cd frontend
 npm ci
 npm run build
 cd ..
@@ -49,7 +49,12 @@ cd ..
 # Build Go binaries
 export CGO_ENABLED=1
 go mod download
-make build
+
+# Build single binary (Wails app with all subcommands, embeds frontend/dist)
+go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+
+# Build PAM module
+CGO_ENABLED=1 go build -buildmode=c-shared -ldflags="-s -w" -o bin/pam_linuxhello.so ./pkg/pam
 
 %install
 # Create directories
@@ -57,7 +62,6 @@ install -d %{buildroot}%{_bindir}
 install -d %{buildroot}%{_libdir}/security
 install -d %{buildroot}%{_sysconfdir}/linuxhello
 install -d %{buildroot}%{_datadir}/linuxhello
-install -d %{buildroot}%{_datadir}/linuxhello/web-ui
 install -d %{buildroot}%{_datadir}/linuxhello/python-service
 install -d %{buildroot}%{_datadir}/linuxhello/models
 install -d %{buildroot}%{_datadir}/applications
@@ -67,30 +71,25 @@ install -d %{buildroot}%{_localstatedir}/log
 
 # Install binaries
 install -m 755 bin/linuxhello %{buildroot}%{_bindir}/
-install -m 755 bin/linuxhello-enroll %{buildroot}%{_bindir}/
-install -m 755 bin/linuxhello-test %{buildroot}%{_bindir}/
-install -m 755 bin/linuxhello-gui %{buildroot}%{_bindir}/
 install -m 755 bin/pam_linuxhello.so %{buildroot}%{_libdir}/security/
 install -m 755 scripts/linuxhello-pam %{buildroot}%{_bindir}/
 
 # Install configuration
 install -m 644 configs/linuxhello.conf %{buildroot}%{_sysconfdir}/linuxhello/
 
-# Install web interface
-cp -r web-ui/dist/* %{buildroot}%{_datadir}/linuxhello/web-ui/
+# Note: frontend is embedded in linuxhello binary, no separate install needed
 
 # Install Python service
 cp python-service/*.py %{buildroot}%{_datadir}/linuxhello/python-service/
 cp python-service/requirements.txt %{buildroot}%{_datadir}/linuxhello/python-service/
 
-# Install models
-cp models/README.md %{buildroot}%{_datadir}/linuxhello/models/
-cp models/arcface_r50.onnx %{buildroot}%{_datadir}/linuxhello/models/
-cp models/scrfd_person_2.5g.onnx %{buildroot}%{_datadir}/linuxhello/models/
+# Install models (if present)
+cp models/README.md %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
+cp models/arcface_r50.onnx %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
+cp models/scrfd_person_2.5g.onnx %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
 
-# Install systemd services
+# Install systemd service (inference only; GUI is a desktop app)
 install -m 644 systemd/linuxhello-inference.service %{buildroot}%{_unitdir}/
-install -m 644 packaging/linuxhello-gui.service %{buildroot}%{_unitdir}/
 
 # Install desktop launcher
 install -m 644 packaging/linuxhello.desktop %{buildroot}%{_datadir}/applications/
@@ -107,79 +106,55 @@ getent passwd linuxhello >/dev/null || \
 chown -R linuxhello:linuxhello %{_localstatedir}/lib/linuxhello
 chmod 755 %{_localstatedir}/lib/linuxhello
 
-# Enable and start services
+# Enable and start inference service
 %systemd_post linuxhello-inference.service
-%systemd_post linuxhello-gui.service
 
-# Start services automatically (with error handling)
-echo "Starting LinuxHello services..."
+echo "Starting LinuxHello inference service..."
 if systemctl start linuxhello-inference.service 2>/dev/null; then
-    echo "✅ Inference service started"
+    echo "Inference service started"
 else
-    echo "⚠️  Inference service failed to start (may need manual setup)"
+    echo "Inference service failed to start (may need manual setup)"
 fi
 
-if systemctl start linuxhello-gui.service 2>/dev/null; then
-    echo "✅ GUI service started"
-else
-    echo "⚠️  GUI service failed to start (check dependencies)"
-fi
-
-# Check if services are running
-sleep 2
-if systemctl is-active --quiet linuxhello-inference.service && systemctl is-active --quiet linuxhello-gui.service; then
-    echo ""
-    echo "🎉 LinuxHello installed and started successfully!"
-    echo ""
-    echo "🚀 Ready to use:"
-    echo "   • Web interface: http://localhost:8080"
-    echo "   • Management GUI: linuxhello-gui"
-    echo "   • Enrollment tool: linuxhello-enroll"
-    echo ""
-    echo "📋 Next steps:"
-    echo "   1. Open GUI: http://localhost:8080"
-    echo "   2. Enroll your face: linuxhello-enroll"
-    echo "   3. Enable PAM auth: linuxhello-pam enable-sudo"
-    echo ""
-else
-    echo ""
-    echo "⚠️  LinuxHello installed but some services may need manual attention."
-    echo ""
-    echo "🔧 Manual startup:"
-    echo "   sudo systemctl start linuxhello-inference linuxhello-gui"
-    echo ""
-    echo "📋 Next steps:"
-    echo "   1. Check logs: sudo journalctl -u linuxhello-inference -u linuxhello-gui"
-    echo "   2. Open GUI: http://localhost:8080"
-    echo "   3. Enroll users and enable PAM authentication"
-fi
+echo ""
+echo "LinuxHello installed successfully!"
+echo ""
+echo "Next steps:"
+echo "   1. Launch the desktop GUI: sudo linuxhello"
+echo "   2. Enroll your face: sudo linuxhello enroll -user \$USER"
+echo "   3. Enable PAM auth: sudo linuxhello-pam enable sudo"
 echo ""
 
 %preun
 %systemd_preun linuxhello-inference.service
-%systemd_preun linuxhello-gui.service
 
 %postun
 %systemd_postun_with_restart linuxhello-inference.service
-%systemd_postun_with_restart linuxhello-gui.service
 
 %files
 %license LICENSE
 %doc README.md
 %{_bindir}/linuxhello
-%{_bindir}/linuxhello-enroll
-%{_bindir}/linuxhello-test
-%{_bindir}/linuxhello-gui
 %{_bindir}/linuxhello-pam
 %{_libdir}/security/pam_linuxhello.so
 %config(noreplace) %{_sysconfdir}/linuxhello/linuxhello.conf
 %{_datadir}/linuxhello/
 %{_datadir}/applications/linuxhello.desktop
 %{_unitdir}/linuxhello-inference.service
-%{_unitdir}/linuxhello-gui.service
 %dir %{_localstatedir}/lib/linuxhello
 
 %changelog
+* Thu Feb 06 2026 MrCode <mrcode@example.com> - 1.3.4-3
+- Consolidated all binaries into single linuxhello binary with subcommands
+- Removed linuxhello-enroll, linuxhello-test, linuxhello-gui separate binaries
+- GUI, daemon, enroll, and test all accessible via linuxhello subcommands
+
+* Thu Feb 06 2025 MrCode <mrcode@example.com> - 1.3.4-2
+- Migrated GUI from HTTP server to Wails v2 desktop application
+- Frontend now embedded in linuxhello-gui binary
+- Removed GUI systemd service (desktop app requires display server)
+- Updated build to compile Wails app from project root
+
 * Mon Feb 04 2024 MrCode <mrcode@example.com> - 0.1.1-1
 - Initial RPM package
 - Face authentication with PAM integration
