@@ -1,25 +1,19 @@
-import React, { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import { Shield, CheckCircle, AlertCircle, Loader2, Terminal, Key, Lock } from 'lucide-react'
+import type { PAMServiceStatus } from '../wails'
 
 interface PAMTabProps {
   pamStatus: string
+  pamServices: PAMServiceStatus[]
   isProcessing: boolean
   commandOutput?: string
-  handlePAMAction: (action: string) => void
+  handlePAMAction: (action: string, service?: string) => void
   handlePAMToggle: (enable: boolean) => void
-}
-
-interface PAMService {
-  id: string
-  name: string
-  description: string
-  category: 'system' | 'desktop' | 'elevated'
-  icon: React.ReactNode
-  status: 'enabled' | 'disabled' | 'unknown'
 }
 
 export const PAMTab: React.FC<PAMTabProps> = ({
   pamStatus,
+  pamServices,
   isProcessing,
   commandOutput,
   handlePAMAction,
@@ -27,75 +21,35 @@ export const PAMTab: React.FC<PAMTabProps> = ({
 }) => {
   const [selectedServices, setSelectedServices] = useState<string[]>([])
 
-  // PAM services configuration
-  const pamServices: PAMService[] = [
-    {
-      id: 'sudo',
-      name: 'Sudo',
-      description: 'Administrative commands with sudo',
-      category: 'elevated',
-      icon: <Terminal size={20} className="text-red-400" />,
-      status: 'unknown'
-    },
-    {
-      id: 'polkit',
-      name: 'PolicyKit',
-      description: 'GUI authentication dialogs (KDE/GNOME)',
-      category: 'desktop',
-      icon: <Shield size={20} className="text-blue-400" />,
-      status: 'unknown'
-    },
-    {
-      id: 'login',
-      name: 'System Login',
-      description: 'Console and TTY login',
-      category: 'system',
-      icon: <Key size={20} className="text-green-400" />,
-      status: 'unknown'
-    },
-    {
-      id: 'su',
-      name: 'Switch User (su)',
-      description: 'User switching with su command',
-      category: 'elevated',
-      icon: <Lock size={20} className="text-orange-400" />,
-      status: 'unknown'
-    },
-    {
-      id: 'sddm',
-      name: 'SDDM',
-      description: 'Simple Desktop Display Manager (KDE)',
-      category: 'desktop',
-      icon: <CheckCircle size={20} className="text-purple-400" />,
-      status: 'unknown'
-    },
-    {
-      id: 'gdm',
-      name: 'GDM',
-      description: 'GNOME Display Manager',
-      category: 'desktop',
-      icon: <CheckCircle size={20} className="text-indigo-400" />,
-      status: 'unknown'
-    },
-    {
-      id: 'lightdm',
-      name: 'LightDM',
-      description: 'Lightweight Display Manager',
-      category: 'desktop',
-      icon: <CheckCircle size={20} className="text-cyan-400" />,
-      status: 'unknown'
-    }
-  ]
+  const getServiceIcon = (name: string) => {
+    if (!name) return <Shield size={20} className="text-gray-400" />
+    const lowerName = name.toLowerCase()
+    if (lowerName.includes('sudo')) return <Terminal size={20} className="text-red-400" />
+    if (lowerName.includes('polkit')) return <Shield size={20} className="text-blue-400" />
+    if (lowerName.includes('login')) return <Key size={20} className="text-green-400" />
+    if (lowerName.includes('su') && !lowerName.includes('sudo')) return <Lock size={20} className="text-orange-400" />
+    if (lowerName.includes('sddm')) return <CheckCircle size={20} className="text-purple-400" />
+    if (lowerName.includes('gdm')) return <CheckCircle size={20} className="text-indigo-400" />
+    if (lowerName.includes('lightdm')) return <CheckCircle size={20} className="text-cyan-400" />
+    if (lowerName.includes('kde')) return <CheckCircle size={20} className="text-pink-400" />
+    return <Shield size={20} className="text-gray-400" />
+  }
+
+  const getServiceCategory = (name: string): 'system' | 'desktop' | 'elevated' => {
+    if (!name) return 'system'
+    const lowerName = name.toLowerCase()
+    if (lowerName.includes('sudo') || lowerName.includes('su')) return 'elevated'
+    if (lowerName.includes('dm') || lowerName.includes('polkit') || lowerName.includes('kde')) return 'desktop'
+    return 'system'
+  }
 
   const handleServiceToggle = (serviceId: string, enable: boolean) => {
     const action = enable ? 'enable' : 'disable'
-    // This would need to be updated to call a new API endpoint for service-specific PAM management
-    handlePAMAction(`${action}-${serviceId}`)
+    handlePAMAction(action, serviceId)
   }
 
   const handleBulkToggle = (enable: boolean) => {
     if (selectedServices.length === 0) return
-    
     selectedServices.forEach(serviceId => {
       handleServiceToggle(serviceId, enable)
     })
@@ -122,21 +76,33 @@ export const PAMTab: React.FC<PAMTabProps> = ({
 
   const getStatusBadge = (status: string) => {
     const baseClasses = 'px-2 py-1 rounded-full text-xs font-medium'
-    switch (status) {
+    if (!status) return <span className={`${baseClasses} bg-gray-900 text-gray-300 border border-gray-700`}>Unknown</span>
+    switch (status.toLowerCase()) {
       case 'enabled':
         return <span className={`${baseClasses} bg-green-900 text-green-300 border border-green-700`}>Enabled</span>
       case 'disabled':
         return <span className={`${baseClasses} bg-red-900 text-red-300 border border-red-700`}>Disabled</span>
+      case 'not installed':
+        return <span className={`${baseClasses} bg-yellow-900 text-yellow-300 border border-yellow-700`}>Not Installed</span>
       default:
-        return <span className={`${baseClasses} bg-gray-900 text-gray-300 border border-gray-700`}>Unknown</span>
+        return <span className={`${baseClasses} bg-gray-900 text-gray-300 border border-gray-700`}>{status}</span>
     }
   }
 
-  const groupedServices = pamServices.reduce((acc, service) => {
-    if (!acc[service.category]) acc[service.category] = []
-    acc[service.category].push(service)
-    return acc
-  }, {} as Record<string, PAMService[]>)
+  const groupedServices = useMemo(() => {
+    if (!pamServices || pamServices.length === 0) {
+      return {}
+    }
+    // Use lowercase property names as they come from JSON
+    const validServices = pamServices.filter((s: any) => s && s.name && s.id)
+    console.log('PAM Services received:', pamServices.length, 'Valid:', validServices.length, pamServices)
+    return validServices.reduce((acc: any, service: any) => {
+      const category = getServiceCategory(service.name)
+      if (!acc[category]) acc[category] = []
+      acc[category].push(service)
+      return acc
+    }, {} as Record<string, any[]>)
+  }, [pamServices])
 
   return (
     <div className="space-y-6">
@@ -145,7 +111,6 @@ export const PAMTab: React.FC<PAMTabProps> = ({
         <h2 className="text-2xl font-bold text-gray-100">PAM Integration Manager</h2>
       </div>
 
-      {/* Current Status */}
       <div className="bg-neutral-800 p-6 rounded-xl border border-neutral-700">
         <h3 className="text-lg font-medium text-gray-200 mb-4">Current PAM Status</h3>
         <div className="p-4 bg-neutral-900 rounded-lg border border-neutral-600">
@@ -153,14 +118,26 @@ export const PAMTab: React.FC<PAMTabProps> = ({
         </div>
       </div>
 
-      {/* Service Selection */}
+      {/* Debug info */}
+      <div className="bg-blue-900/20 border border-blue-600 p-4 rounded-xl">
+        <h4 className="text-blue-300 font-medium mb-2">Debug Info</h4>
+        <p className="text-blue-200 text-sm">Services count: {pamServices?.length || 0}</p>
+        <p className="text-blue-200 text-sm">Grouped categories: {Object.keys(groupedServices).length}</p>
+        {pamServices && pamServices.length > 0 && (
+          <div className="mt-2">
+            <p className="text-blue-200 text-sm font-semibold">First service data:</p>
+            <pre className="text-xs text-blue-100 mt-1 overflow-x-auto">{JSON.stringify(pamServices[0], null, 2)}</pre>
+          </div>
+        )}
+      </div>
+
       {selectedServices.length > 0 && (
         <div className="bg-blue-900/20 border border-blue-700 p-4 rounded-xl">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <AlertCircle size={20} className="text-blue-400" />
               <span className="text-blue-300">
-                {selectedServices.length} service{selectedServices.length !== 1 ? 's' : ''} selected
+                {selectedServices.length} service{selectedServices.length === 1 ? '' : 's'} selected
               </span>
             </div>
             <div className="flex gap-2">
@@ -189,66 +166,79 @@ export const PAMTab: React.FC<PAMTabProps> = ({
         </div>
       )}
 
-      {/* PAM Services by Category */}
-      {Object.entries(groupedServices).map(([category, services]) => (
-        <div key={category} className="bg-neutral-800 p-6 rounded-xl border border-neutral-700">
-          <h3 className="text-lg font-medium text-gray-200 mb-4 flex items-center gap-2">
-            {getCategoryIcon(category)}
-            {getCategoryTitle(category)}
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {services.map((service) => (
-              <div
-                key={service.id}
-                className={`p-4 rounded-lg border transition-colors ${
-                  selectedServices.includes(service.id)
-                    ? 'bg-blue-900/20 border-blue-600'
-                    : 'bg-neutral-900 border-neutral-700 hover:border-neutral-600'
-                }`}
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={selectedServices.includes(service.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedServices([...selectedServices, service.id])
-                        } else {
-                          setSelectedServices(selectedServices.filter(id => id !== service.id))
-                        }
-                      }}
-                      className="rounded bg-neutral-900 border-neutral-700 text-blue-600 focus:ring-blue-500"
-                    />
-                    {service.icon}
-                    <span className="font-medium text-gray-200">{service.name}</span>
-                  </div>
-                  {getStatusBadge(service.status)}
-                </div>
-                <p className="text-sm text-gray-400 mb-3">{service.description}</p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleServiceToggle(service.id, true)}
-                    disabled={isProcessing}
-                    className="flex-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-                  >
-                    Enable
-                  </button>
-                  <button
-                    onClick={() => handleServiceToggle(service.id, false)}
-                    disabled={isProcessing}
-                    className="flex-1 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
-                  >
-                    Disable
-                  </button>
-                </div>
-              </div>
-            ))}
+      {(!pamServices || pamServices.length === 0) && (
+        <div className="bg-neutral-800 p-6 rounded-xl border border-neutral-700">
+          <div className="flex items-center gap-3 text-gray-400">
+            <AlertCircle size={24} />
+            <div>
+              <h3 className="text-lg font-medium text-gray-200 mb-2">No PAM Services Found</h3>
+              <p className="text-sm">
+                The PAM management script may not be installed or accessible. 
+                Try clicking "Refresh Status" or "List Services" to reload the service list.
+              </p>
+            </div>
           </div>
         </div>
-      ))}
+      )}
 
-      {/* Legacy PAM Controls */}
+      {pamServices && pamServices.length > 0 && Object.entries(groupedServices).map(([category, services]) => (
+          <div key={category} className="bg-neutral-800 p-6 rounded-xl border border-neutral-700">
+            <h3 className="text-lg font-medium text-gray-200 mb-4 flex items-center gap-2">
+              {getCategoryIcon(category)}
+              {getCategoryTitle(category)}
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {services.map((service: any) => (
+                <div
+                  key={service.id}
+                  className={`p-4 rounded-lg border transition-colors ${
+                    selectedServices.includes(service.id)
+                      ? 'bg-blue-900/20 border-blue-600'
+                      : 'bg-neutral-900 border-neutral-700 hover:border-neutral-600'
+                  }`}
+                >
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedServices.includes(service.id)}
+                        onChange={(e) => {
+                          const newSelection = e.target.checked
+                            ? [...selectedServices, service.id]
+                            : selectedServices.filter(id => id !== service.id)
+                          setSelectedServices(newSelection)
+                        }}
+                        className="rounded bg-neutral-900 border-neutral-700 text-blue-600 focus:ring-blue-500"
+                      />
+                      {getServiceIcon(service.name)}
+                      <span className="font-medium text-gray-200">{service.name}</span>
+                    </div>
+                    {getStatusBadge(service.status)}
+                  </div>
+                  <p className="text-sm text-gray-400 mb-3">{service.pamFile}</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleServiceToggle(service.id, true)}
+                      disabled={isProcessing || service.status === 'not installed'}
+                      className="flex-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+                    >
+                      Enable
+                    </button>
+                    <button
+                      onClick={() => handleServiceToggle(service.id, false)}
+                      disabled={isProcessing || service.status === 'not installed'}
+                      className="flex-1 px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+                    >
+                      Disable
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))
+      }
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-neutral-800 p-6 rounded-xl border border-neutral-700">
           <h3 className="text-lg font-medium text-gray-200 mb-4">Legacy PAM Controls</h3>
@@ -273,21 +263,24 @@ export const PAMTab: React.FC<PAMTabProps> = ({
         <div className="bg-neutral-800 p-6 rounded-xl border border-neutral-700">
           <h3 className="text-lg font-medium text-gray-200 mb-4">System Actions</h3>
           <div className="grid grid-cols-2 gap-3">
-            {['status', 'install', 'uninstall', 'backup', 'restore'].map(action => (
-              <button
-                key={action}
-                onClick={() => handlePAMAction(action)}
-                disabled={isProcessing}
-                className="px-3 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm capitalize"
-              >
-                {action}
-              </button>
-            ))}
+            <button
+              onClick={() => handlePAMAction('status', '')}
+              disabled={isProcessing}
+              className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+            >
+              Refresh Status
+            </button>
+            <button
+              onClick={() => handlePAMAction('list', '')}
+              disabled={isProcessing}
+              className="px-3 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+            >
+              List Services
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Command Output */}
       {commandOutput && (
         <div className="bg-neutral-800 p-4 rounded-xl border border-neutral-700">
           <h3 className="text-lg font-medium text-gray-200 mb-2 flex items-center gap-2">
@@ -300,7 +293,6 @@ export const PAMTab: React.FC<PAMTabProps> = ({
         </div>
       )}
 
-      {/* Warning */}
       <div className="bg-yellow-900/20 border border-yellow-700 p-4 rounded-xl">
         <div className="flex items-start gap-3">
           <AlertCircle size={20} className="text-yellow-400 mt-0.5" />

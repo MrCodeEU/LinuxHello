@@ -9,9 +9,10 @@
 A Windows Hello-style face authentication system for Linux that provides:
 
 - 🔐 **PAM Integration**: Face authentication for `sudo`, login screens, and system unlock
-- 🌐 **Web Management**: Easy enrollment and configuration through browser interface  
+- 🌐 **Web Management GUI**: Modern Wails-based desktop app with browser interface at `localhost:8080`
 - 📷 **IR Camera Support**: Uses infrared cameras with anti-spoofing protection
 - 🧠 **AI-Powered**: Real-time face detection and recognition using ONNX models
+- 📊 **Real-time Monitoring**: Live enrollment progress, system logs, and authentication testing
 - 🐧 **Linux Native**: Built specifically for Linux with systemd integration
 
 ## 🚀 Quick Start
@@ -31,22 +32,37 @@ sudo systemctl enable --now linuxhello-inference
 
 ### Quick Setup
 ```bash
-# 1. Launch the desktop GUI
+# 1. Launch the desktop GUI (automatically opens in browser)
 sudo linuxhello
+# Or use the desktop launcher: Applications → LinuxHello Face Authentication
 
-# 2. Enroll your face in the GUI, then:
+# 2. In the web interface (localhost:8080):
+#    - Go to "Enrollment" tab and enroll your face
+#    - Watch real-time progress as it captures samples
+#    - Test authentication in the "Auth Test" tab
+
+# 3. Enable PAM authentication:
 sudo linuxhello-pam enable sudo
 sudo -k && sudo ls  # Test face authentication!
 ```
 
 ## 🎯 Features
 
+### Core Authentication
 - **🔐 PAM Integration**: Face authentication for `sudo`, login, and screen unlock
-- **🌐 Web Interface**: Easy enrollment and management through browser  
 - **📷 IR Camera Support**: Works in darkness with anti-spoofing protection
-- **🧠 AI Recognition**: Fast, accurate face detection and recognition
-- **👁️ Visual Debugging**: Real-time detection visualization and confidence scores
-- **👥 Multi-User**: Support for multiple enrolled users
+- **🧠 AI Recognition**: Fast, accurate face detection and recognition using ArcFace
+- **👥 Multi-User**: Support for multiple enrolled users with individual profiles
+
+### Modern Web UI (Wails v2)
+- **🌐 Desktop App**: Native desktop application with embedded web interface
+- **📊 Real-time Enrollment**: Live progress bar showing sample capture (e.g., "Sample 3/5")
+- **👁️ Live Camera Preview**: See exactly what the camera sees during enrollment
+- **🧪 Authentication Testing**: Test face recognition with bounding box visualization
+- **📋 System Logs**: View and download systemd service logs with filtering
+- **⚙️ Configuration**: Adjust thresholds, camera settings, and authentication parameters
+- **🎮 Service Control**: Start/stop/restart inference and GUI services
+- **🔧 PAM Management**: One-click enable/disable PAM authentication
 
 ## ⚠️ Hardware Requirements
 
@@ -89,14 +105,34 @@ make setup && make build
 | Ubuntu + GNOME | 🔶 Untested | Should work |
 ## 🛠️ Configuration
 
-Default config at `/etc/linuxhello/linuxhello.conf`:
+### Web Interface Configuration
+Access the GUI at `http://localhost:8080` or launch via:
+- Command: `sudo linuxhello`
+- Desktop: Applications → LinuxHello Face Authentication
+
+The **Settings** tab provides:
+- Camera device selection and resolution
+- Detection confidence and NMS thresholds  
+- Recognition similarity threshold (0.5-0.8)
+- Enrollment sample count
+- Logging level configuration
+
+Changes are saved to `/etc/linuxhello/linuxhello.conf` (or `/var/lib/linuxhello/` if permissions restrict).
+
+### Manual Configuration
+Edit `/etc/linuxhello/linuxhello.conf`:
 ```yaml
 camera:
   device: "/dev/video0"    # Your IR camera
+  width: 1280              # Camera resolution
+  height: 720
+  
 recognition:
-  threshold: 0.6           # Similarity threshold (0.5-0.8)
+  similarity_threshold: 0.6   # Match threshold (0.5-0.8)
+  enrollment_samples: 5       # Samples to capture
+  
 auth:
-  timeout: 10             # Seconds before timeout
+  timeout: 10                 # Seconds before timeout
 ```
 
 ## ⚠️ Safety & Recovery

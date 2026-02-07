@@ -12,6 +12,10 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
 
+const (
+	configHelpText = "    -config <path>        Path to configuration file"
+)
+
 //go:embed all:frontend/dist
 var assets embed.FS
 
@@ -62,10 +66,10 @@ func runWailsApp() {
 
 	err := wails.Run(&options.App{
 		Title:     "LinuxHello",
-		Width:     1200,
-		Height:    800,
-		MinWidth:  800,
-		MinHeight: 600,
+		Width:     1680,
+		Height:    1120,
+		MinWidth:  1000,
+		MinHeight: 800,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
@@ -101,19 +105,19 @@ func printHelp() {
 	println("Subcommand Options:")
 	println("")
 	println("  daemon:")
-	println("    -config <path>        Path to configuration file")
+	println(configHelpText)
 	println("    -verbose              Enable verbose logging")
 	println("")
 	println("  enroll:")
 	println("    -user <username>      Username to enroll (required)")
 	println("    -samples <n>          Number of samples to capture (default: 5)")
-	println("    -config <path>        Path to configuration file")
+	println(configHelpText)
 	println("    -list                 List enrolled users")
 	println("    -delete <username>    Delete user enrollment")
 	println("")
 	println("  test:")
 	println("    -user <username>      Specific user to authenticate (optional)")
-	println("    -config <path>        Path to configuration file")
+	println(configHelpText)
 	println("    -continuous           Continuous authentication mode")
 	println("")
 	println("Examples:")

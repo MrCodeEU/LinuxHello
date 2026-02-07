@@ -152,7 +152,7 @@ func DefaultConfig() *Config {
 			AutoExposure: true,
 		},
 		Detection: DetectionConfig{
-			ModelPath:     "models/scrfd_person_2.5g.onnx",
+			ModelPath:     "models/det_10g.onnx",
 			Confidence:    0.5,
 			NMSThreshold:  0.4,
 			InputSize:     640,
@@ -219,9 +219,10 @@ func Load(configPath string) (*Config, error) {
 	if configPath != "" {
 		v.SetConfigFile(configPath)
 	} else {
-		v.SetConfigName("facelock")
+		// Look for linuxhello.conf (current) or facelock (legacy)
+		v.SetConfigName("linuxhello")
 		v.AddConfigPath("/etc/linuxhello/")
-		v.AddConfigPath("$HOME/.facelock")
+		v.AddConfigPath("$HOME/.linuxhello")
 		v.AddConfigPath(".")
 	}
 

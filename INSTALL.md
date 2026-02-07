@@ -129,7 +129,7 @@ sudo journalctl -u linuxhello-inference -f
 
 ### Model Issues
 - Models should be in `/usr/share/linuxhello/models/`
-- Required: `arcface_r50.onnx`, `scrfd_person_2.5g.onnx`
+- Required: `arcface_r50.onnx`, `det_10g.onnx`
 - Re-run model download script if needed
 
 ## Uninstallation

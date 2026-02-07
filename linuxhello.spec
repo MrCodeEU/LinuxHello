@@ -99,7 +99,7 @@ install -m 644 systemd/linuxhello-inference.service %{buildroot}%{_unitdir}/
 
 # Install models directory (empty, will be populated post-install)
 touch %{buildroot}%{_datadir}/linuxhello/models/README.md
-echo "Place ONNX models (arcface_r50.onnx, scrfd_person_2.5g.onnx) in this directory" > %{buildroot}%{_datadir}/linuxhello/models/README.md
+echo "Place ONNX models (arcface_r50.onnx, det_10g.onnx) in this directory" > %{buildroot}%{_datadir}/linuxhello/models/README.md
 
 %pre
 # Create linuxhello user for the service
@@ -133,7 +133,7 @@ echo ""
 echo "Next steps:"
 echo "1. Download ONNX models to %{_datadir}/linuxhello/models/"
 echo "   - arcface_r50.onnx (face recognition)"
-echo "   - scrfd_person_2.5g.onnx (face detection)"
+echo "   - det_10g.onnx (SCRFD face detection)"
 echo "2. Start the inference service: systemctl enable --now linuxhello-inference"
 echo "3. Launch the desktop GUI: sudo linuxhello"
 echo "4. Use the GUI to enroll faces and enable PAM integration"

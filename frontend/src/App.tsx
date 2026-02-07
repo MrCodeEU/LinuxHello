@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Camera, Users, Settings, Activity, Save, Shield, HardDrive, Terminal, Loader2 } from 'lucide-react'
+import { Camera, Users, Settings, Activity, Shield, HardDrive, Terminal, Loader2 } from 'lucide-react'
 import { useAppData } from './hooks/useAppData'
 import { useEnrollment } from './hooks/useEnrollment'
 import { useAuthTesting } from './hooks/useAuthTesting'
@@ -11,11 +11,12 @@ import { AuthTestTab } from './components/AuthTestTab'
 import { SettingsTab } from './components/SettingsTab'
 import { PAMTab } from './components/PAMTab'
 import { LogsTab } from './components/LogsTab'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 function App() {
   const [activeTab, setActiveTab] = useState('enroll')
   
-  const { users, config, setConfig, pamStatus, serviceInfo, fetchData, fetchUsers, fetchConfig, fetchServiceStatus } = useAppData()
+  const { users, config, setConfig, pamStatus, pamServices, serviceInfo, fetchData, fetchUsers, fetchConfig, fetchServiceStatus } = useAppData()
   const { enrollName, setEnrollName, enrollStatus, isEnrolling, enrollmentProgress, handleEnroll } = useEnrollment(fetchUsers)
   const { authTestResult, isAuthTesting, handleAuthTest } = useAuthTesting()
   const { commandOutput, isProcessing, handlePAMAction, handlePAMToggle, handleServiceAction } = useServiceActions(fetchData, fetchServiceStatus)
@@ -34,11 +35,11 @@ function App() {
 
   useEffect(() => {
     // Only fetch all data on initial load
-    if (activeTab !== 'settings') {
-      fetchData()
-    } else {
+    if (activeTab === 'settings') {
       // For settings tab, only fetch non-config data
       fetchUsers()
+    } else {
+      fetchData()
     }
     
     const interval = setInterval(() => {
@@ -86,13 +87,16 @@ function App() {
       
       case 'pam':
         return (
-          <PAMTab
-            pamStatus={pamStatus}
-            isProcessing={isProcessing}
-            commandOutput={commandOutput}
-            handlePAMAction={handlePAMAction}
-            handlePAMToggle={handlePAMToggle}
-          />
+          <ErrorBoundary>
+            <PAMTab
+              pamStatus={pamStatus}
+              pamServices={pamServices}
+              isProcessing={isProcessing}
+              commandOutput={commandOutput}
+              handlePAMAction={handlePAMAction}
+              handlePAMToggle={handlePAMToggle}
+            />
+          </ErrorBoundary>
         )
       
       case 'service':

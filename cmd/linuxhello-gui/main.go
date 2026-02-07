@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"log"
 	"mime/multipart"
@@ -25,7 +27,12 @@ import (
 	"github.com/MrCodeEU/LinuxHello/internal/auth"
 	"github.com/MrCodeEU/LinuxHello/internal/camera"
 	"github.com/MrCodeEU/LinuxHello/internal/config"
+	"github.com/MrCodeEU/LinuxHello/pkg/models"
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	pathLinuxHelloPAM = "/usr/bin/linuxhello-pam"
 )
 
 var (
@@ -260,7 +267,7 @@ func handlePAM(w http.ResponseWriter, r *http.Request) {
 
 // handlePAMStatus handles GET requests for PAM status
 func handlePAMStatus(w http.ResponseWriter) {
-	script := findPAMScript("./scripts/manage-pam.sh", "/usr/bin/linuxhello-pam")
+	script := findPAMScript("./scripts/manage-pam.sh", pathLinuxHelloPAM)
 
 	cmd := exec.Command(script, "status")
 	out, err := cmd.CombinedOutput()
@@ -479,10 +486,56 @@ func handleService(w http.ResponseWriter, r *http.Request) {
 }
 
 func broadcaster() {
-	ticker := time.NewTicker(33 * time.Millisecond)
-	defer ticker.Stop()
+	streamTicker := time.NewTicker(33 * time.Millisecond)  // ~30 FPS for streaming
+	detectTicker := time.NewTicker(200 * time.Millisecond) // 5 FPS for face detection
+	defer streamTicker.Stop()
+	defer detectTicker.Stop()
 
-	for range ticker.C {
+	firstFrameLogged := false
+	var lastDetections []models.Detection
+	var detectionsMu sync.Mutex
+
+	// Detection goroutine - runs at 5 FPS
+	go func() {
+		for range detectTicker.C {
+			if !shouldProcessFrame() {
+				continue
+			}
+
+			authTestMu.Lock()
+			testing := isTestingAuth
+			authTestMu.Unlock()
+			if testing {
+				continue
+			}
+
+			frame, ok := getCameraFrame()
+			if !ok {
+				continue
+			}
+
+			img, err := frame.ToImage()
+			if err != nil {
+				continue
+			}
+
+			enhanced := auth.EnhanceImage(img)
+
+			camMu.Lock()
+			if engine != nil {
+				detections, err := engine.DetectFaces(enhanced)
+				if err == nil {
+					detectionsMu.Lock()
+					lastDetections = detections
+					detectionsMu.Unlock()
+				}
+			}
+			camMu.Unlock()
+		}
+	}()
+
+	// Streaming goroutine - runs at 30 FPS
+	for range streamTicker.C {
 		if !shouldProcessFrame() {
 			continue
 		}
@@ -500,18 +553,35 @@ func broadcaster() {
 			continue
 		}
 
+		// Log first frame dimensions to help debug coordinate issues
+		if !firstFrameLogged {
+			logger.Infof("First frame captured: %dx%d, format: %v", frame.Width, frame.Height, frame.Format)
+			firstFrameLogged = true
+		}
+
 		img, err := frame.ToImage()
 		if err != nil {
 			continue
 		}
 
+		// Also log image dimensions
+		if !firstFrameLogged {
+			bounds := img.Bounds()
+			logger.Infof("Image bounds after ToImage(): %dx%d", bounds.Dx(), bounds.Dy())
+		}
+
 		enhanced := auth.EnhanceImage(img)
+
+		// Draw bounding boxes on the frame
+		detectionsMu.Lock()
+		frameWithBoxes := drawBoundingBoxes(enhanced, lastDetections)
+		detectionsMu.Unlock()
 
 		// Process enrollment if active
 		processEnrollmentFrame(enhanced)
 
-		// Send frame to subscribers
-		broadcastFrame(enhanced)
+		// Send frame with bounding boxes to subscribers
+		broadcastFrame(frameWithBoxes)
 	}
 }
 
@@ -542,6 +612,94 @@ func getCameraFrame() (*camera.Frame, bool) {
 	}
 
 	return engine.GetFrame(true)
+}
+
+// drawBoundingBoxes draws bounding boxes and confidence scores on the image
+func drawBoundingBoxes(img image.Image, detections []models.Detection) image.Image {
+	if len(detections) == 0 {
+		return img
+	}
+
+	// Convert to RGBA for drawing
+	bounds := img.Bounds()
+	rgba := image.NewRGBA(bounds)
+	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
+
+	// Define colors
+	boxColor := color.RGBA{0, 255, 0, 255}  // Green for bounding boxes
+	textBgColor := color.RGBA{0, 0, 0, 180} // Semi-transparent black background
+
+	for _, det := range detections {
+		x1 := int(det.X1)
+		y1 := int(det.Y1)
+		x2 := int(det.X2)
+		y2 := int(det.Y2)
+
+		// Ensure coordinates are within bounds
+		if x1 < 0 {
+			x1 = 0
+		}
+		if y1 < 0 {
+			y1 = 0
+		}
+		if x2 > bounds.Dx() {
+			x2 = bounds.Dx()
+		}
+		if y2 > bounds.Dy() {
+			y2 = bounds.Dy()
+		}
+
+		// Draw bounding box (3 pixel thick lines)
+		lineWidth := 3
+		for i := 0; i < lineWidth; i++ {
+			// Top horizontal line
+			for x := x1; x <= x2; x++ {
+				if y1+i < bounds.Dy() {
+					rgba.Set(x, y1+i, boxColor)
+				}
+			}
+			// Bottom horizontal line
+			for x := x1; x <= x2; x++ {
+				if y2-i >= 0 {
+					rgba.Set(x, y2-i, boxColor)
+				}
+			}
+			// Left vertical line
+			for y := y1; y <= y2; y++ {
+				if x1+i < bounds.Dx() {
+					rgba.Set(x1+i, y, boxColor)
+				}
+			}
+			// Right vertical line
+			for y := y1; y <= y2; y++ {
+				if x2-i >= 0 {
+					rgba.Set(x2-i, y, boxColor)
+				}
+			}
+		}
+
+		// Draw confidence text background (simple rectangle)
+		confText := fmt.Sprintf("%.1f%%", det.Confidence*100)
+		textX := x1 + 5
+		textY := y1 - 20
+		if textY < 5 {
+			textY = y1 + 20 // If too close to top, draw below the box
+		}
+
+		// Draw a simple text background rectangle
+		bgHeight := 18
+		bgWidth := len(confText) * 8
+		for y := textY; y < textY+bgHeight && y < bounds.Dy(); y++ {
+			for x := textX; x < textX+bgWidth && x < bounds.Dx(); x++ {
+				rgba.Set(x, y, textBgColor)
+			}
+		}
+
+		// Note: For actual text rendering, we'd need a font library like golang.org/x/image/font
+		// For now, the bounding box itself is the most important visual feedback
+	}
+
+	return rgba
 }
 
 // processEnrollmentFrame handles frame processing during enrollment
@@ -1143,5 +1301,7 @@ func handleLogsDownload(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=linuxhello-logs-%s.log", time.Now().Format("2006-01-02")))
-	w.Write(output)
+	if _, err := w.Write(output); err != nil {
+		logger.Warnf("Failed to write logs: %v", err)
+	}
 }

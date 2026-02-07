@@ -12,43 +12,59 @@ LinuxHello is an experimental Windows Hello-style face authentication system for
 
 The system consists of three main components:
 
-1. **linuxhello** (Go/Wails v2) - Single binary with subcommands: GUI (default), daemon, enroll, test
+1. **linuxhello GUI** (Go/Wails v2) - Desktop app with embedded React frontend, runs HTTP server on :8080
 2. **pam_linuxhello.so** (Go/CGO) - PAM module for system authentication integration
 3. **inference_service.py** (Python) - gRPC AI service on port 50051 for face detection/recognition using ONNX models
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────────┐
-│  PAM Module     │────▶│  linuxhello      │────▶│  inference_service  │
-│  (C shared obj) │     │  (Go daemon)     │     │  (Python gRPC)      │
+│  PAM Module     │────▶│  linuxhello GUI │────▶│  inference_service  │
+│  (C shared obj) │     │  (Wails+HTTP)   │     │  (Python gRPC)      │
 └─────────────────┘     └──────────────────┘     └─────────────────────┘
                                │                          │
                         ┌──────┴──────┐           ┌───────┴───────┐
                         │   Camera    │           │  ONNX Models  │
                         │  (go4vl)    │           │  (SCRFD/Arc)  │
                         └─────────────┘           └───────────────┘
+                               │
+                        ┌──────┴──────────────┐
+                        │ React Frontend     │
+                        │ (localhost:8080)   │
+                        └────────────────────┘
 ```
+
+### GUI Architecture (v1.3.4+)
+The `linuxhello` binary runs an HTTP server serving:
+- **Frontend**: React SPA at `http://localhost:8080` (built from `frontend/`, served from embedded FS)
+- **API Endpoints**: RESTful API for enrollment, auth testing, config, PAM management, logs
+- **Camera Streaming**: MJPEG stream at `/api/stream` for live preview
+- **Real-time Updates**: Enrollment progress polling, log viewing, service status
 
 ## Key Directories
 
-- `internal/` - Core packages: auth (engine, liveness, lockout, challenge), camera, config, embedding (SQLite store), cli, daemon
+- `cmd/linuxhello-gui/` - Main HTTP server (main.go) with REST API endpoints, camera streaming, enrollment logic
+- `internal/` - Core packages: auth (engine, liveness, lockout, challenge), camera, config, embedding (SQLite store)
 - `pkg/pam/` - PAM module (CGO, builds as shared library)
 - `python-service/` - Python inference service with ONNX models
-- `frontend/` - React 19 + TypeScript + Vite frontend (embedded in Wails GUI binary)
-- `frontend/wailsjs/` - Auto-generated Wails Go bindings and runtime stubs
-- `app.go` + `main.go` - Wails v2 desktop app (GUI binary, builds from project root)
-- `api/inference/` - Protobuf definitions for Go-Python gRPC communication
+- `frontend/` - React 19 + TypeScript + Vite frontend (embedded in binary at compile time)
+  - `src/components/` - UI components (EnrollmentTab, AuthTestTab, LogsTab, SettingsTab, etc.)
+  - `src/hooks/` - React hooks for data fetching and state management
+- `models/` - ONNX model files (downloaded by `make setup`)
+- `scripts/` - Helper scripts (linuxhello-pam for PAM management)
+- `systemd/` - systemd service files
 
 ## Build Commands
 
 ```bash
-# Complete setup (Python venv + Go deps + download AI models)
+# Complete setup (Python venv + Go deps + download AI models + build frontend)
 make setup
 
-# Build all binaries (linuxhello + pam_linuxhello.so)
+# Build all binaries (linuxhello-gui + pam_linuxhello.so + frontend)
 make build
 
 # Build individual components
-make build-app      # linuxhello (Wails app with all subcommands, includes frontend build)
+make build-frontend # npm run build in frontend/
+make build-gui      # linuxhello-gui HTTP server (includes frontend embed)
 make build-pam      # pam_linuxhello.so (CGO)
 ```
 
@@ -85,12 +101,29 @@ make start-service-bg
 # Stop inference service
 make stop-service
 
-# Run desktop GUI (starts inference service + launches Wails app)
-make gui
+# Run GUI (starts both services and opens browser to localhost:8080)
+sudo linuxhello
+# Or via desktop launcher after installation
 
 # Check service status
 make status
+sudo systemctl status linuxhello-inference
+sudo systemctl status linuxhello-gui
 ```
+
+## API Endpoints (localhost:8080)
+
+The GUI HTTP server provides:
+- `GET /api/stream` - MJPEG camera stream
+- `GET /api/users` - List enrolled users
+- `POST /api/enroll` - Start enrollment (username in body)
+- `GET /api/enroll/status` - Poll enrollment progress (real-time)
+- `GET/POST /api/config` - Get/update configuration
+- `GET/POST /api/pam` - PAM status and management
+- `GET /api/logs` - View systemd service logs (journalctl integration)
+- `GET /api/logs/download` - Download full logs
+- `POST /api/authtest` - Test authentication with current camera frame
+- `POST /api/service` - Control systemd services (start/stop/restart)
 
 ## Configuration
 

@@ -86,7 +86,7 @@ cp python-service/requirements.txt %{buildroot}%{_datadir}/linuxhello/python-ser
 # Install models (if present)
 cp models/README.md %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
 cp models/arcface_r50.onnx %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
-cp models/scrfd_person_2.5g.onnx %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
+cp models/det_10g.onnx %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
 
 # Install systemd service (inference only; GUI is a desktop app)
 install -m 644 systemd/linuxhello-inference.service %{buildroot}%{_unitdir}/

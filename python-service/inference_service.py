@@ -22,7 +22,7 @@ import inference_pb2_grpc
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for troubleshooting
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ class FaceDetector:
         self.conf_threshold = conf_threshold
         self.nms_threshold = nms_threshold
         self.input_size = (640, 640)
+        self.debug_mode = os.environ.get('LINUXHELLO_DEBUG', '').lower() == 'true'
         
         # Create ONNX Runtime session with available providers
         providers = self._get_available_providers()
@@ -113,26 +114,50 @@ class FaceDetector:
         
         return providers
     
-    def preprocess(self, image: np.ndarray) -> np.ndarray:
-        """Preprocess image for SCRFD model"""
-        # SCRFD works best with square images, resize to input_size
-        # Pad to square if needed to maintain aspect ratio
+    def preprocess(self, image: np.ndarray) -> Tuple[np.ndarray, dict]:
+        """
+        Preprocess image for SCRFD model with optimized scaling.
+        
+        Strategy: Resize to maintain aspect ratio first, then pad to square.
+        This keeps faces at maximum resolution in the model input.
+        
+        Returns:
+            Tuple of (preprocessed_image, transform_info) where transform_info
+            contains the padding and scaling information needed to transform
+            coordinates back to the original image space.
+        """
         h, w = image.shape[:2]
-        size = max(h, w)
+        target_size = self.input_size[0]  # 640
         
-        # Create square canvas
-        canvas = np.zeros((size, size, 3), dtype=np.uint8)
-        # Paste image in center
-        y_offset = (size - h) // 2
-        x_offset = (size - w) // 2
-        canvas[y_offset:y_offset+h, x_offset:x_offset+w] = image
+        # Calculate scale to fit the longer dimension to target_size
+        # while maintaining aspect ratio
+        scale = target_size / max(h, w)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
         
-        # Resize to model input size
-        img = cv2.resize(canvas, self.input_size)
+        # Resize image maintaining aspect ratio
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         
-        # Convert to RGB and normalize to [0, 1]
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
+        # Create square canvas and center the resized image
+        canvas = np.zeros((target_size, target_size, 3), dtype=np.uint8)
+        y_offset = (target_size - new_h) // 2
+        x_offset = (target_size - new_w) // 2
+        canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        
+        # Store transform info for coordinate mapping back
+        transform_info = {
+            'original_width': w,
+            'original_height': h,
+            'scale': scale,  # Scale factor from original to resized
+            'x_offset': x_offset,  # Padding on left
+            'y_offset': y_offset,  # Padding on top
+            'resized_width': new_w,
+            'resized_height': new_h
+        }
+        
+        # Convert to RGB and normalize to [-1, 1] (InsightFace SCRFD standard)
+        img = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        img = (img.astype(np.float32) - 127.5) / 128.0
         
         # Transpose to CHW format
         img = img.transpose(2, 0, 1)
@@ -140,8 +165,165 @@ class FaceDetector:
         # Add batch dimension
         img = np.expand_dims(img, axis=0)
         
-        return img
+        # Log preprocessing details at debug level
+        logger.debug(f"Preprocessing: original={w}x{h} → resized={new_w}x{new_h} → 640x640, "
+                   f"scale={scale:.4f}, padding=({x_offset},{y_offset})")
+        
+        return img, transform_info
     
+    def _determine_model_topology(self, scores_out):
+        """Determine model architecture (strides and anchors per position)"""
+        num_scales = len(scores_out)
+        if num_scales == 3:
+            strides = [8, 16, 32]
+        elif num_scales == 5:
+            strides = [8, 16, 32, 64, 128]
+        else:
+            strides = [2**i * 8 for i in range(num_scales)]
+        
+        # Detect number of anchors per position from the largest scale
+        largest_count = scores_out[0][0]
+        feat_size_largest = 640 // strides[0]
+        num_anchors = max(1, largest_count // (feat_size_largest * feat_size_largest))
+        
+        logger.debug(f"Model topology: {num_scales} scales, strides={strides}, num_anchors={num_anchors}")
+        return strides, num_anchors
+    
+    def _decode_bbox(self, bbox_row, cx, cy, stride):
+        """Decode bounding box from anchor-relative coordinates"""
+        dx1, dy1, dx2, dy2 = bbox_row
+        x1 = cx - dx1 * stride
+        y1 = cy - dy1 * stride
+        x2 = cx + dx2 * stride
+        y2 = cy + dy2 * stride
+        return x1, y1, x2, y2
+    
+    def _transform_coords_to_original(self, x, y, transform_info, original_w, original_h):
+        """Transform coordinates from 640x640 model space to original image space"""
+        # Remove padding offsets
+        x_resized = x - transform_info['x_offset']
+        y_resized = y - transform_info['y_offset']
+        
+        # Clamp to resized bounds
+        x_resized = max(0, min(x_resized, transform_info['resized_width']))
+        y_resized = max(0, min(y_resized, transform_info['resized_height']))
+        
+        # Scale to original
+        x_orig = x_resized / transform_info['scale']
+        y_orig = y_resized / transform_info['scale']
+        
+        # Clamp to original bounds
+        x_orig = max(0, min(x_orig, original_w))
+        y_orig = max(0, min(y_orig, original_h))
+        
+        return x_orig, y_orig
+    
+    def _decode_landmarks(self, kps_row, cx, cy, stride, transform_info, original_w, original_h):
+        """Decode 5-point facial landmarks"""
+        landmarks = []
+        for j in range(5):
+            kpx = kps_row[j * 2]
+            kpy = kps_row[j * 2 + 1]
+            
+            lx_640 = cx + kpx * stride
+            ly_640 = cy + kpy * stride
+            
+            lx, ly = self._transform_coords_to_original(
+                lx_640, ly_640, transform_info, original_w, original_h
+            )
+            landmarks.append([lx, ly])
+        
+        return landmarks
+    
+    def _process_scale_detections(self, scale_idx, scores_out, bboxes_out, kps_out, 
+                                   strides, num_anchors, transform_info, 
+                                   original_w, original_h, conf_threshold):
+        """Process detections for a single scale"""
+        curr_size, score_tensor = scores_out[scale_idx]
+        _, bboxes = bboxes_out[scale_idx]
+        _, keypoints = kps_out[scale_idx]
+        
+        stride = strides[scale_idx]
+        feat_size = 640 // stride
+        
+        logger.debug(f"Processing scale {scale_idx}: anchors={curr_size}, "
+                   f"feat_size={feat_size}, stride={stride}, num_anchors={num_anchors}")
+
+        scores = score_tensor.reshape(-1)
+        keep_indices = np.nonzero(scores >= conf_threshold)[0]
+        
+        detections = []
+        for i in keep_indices:
+            score = float(scores[i])
+            
+            # Calculate grid position
+            pos_idx = i // num_anchors
+            h_idx = pos_idx // feat_size
+            w_idx = pos_idx % feat_size
+            
+            # Center point in 640x640 space
+            cx = (w_idx + 0.5) * stride
+            cy = (h_idx + 0.5) * stride
+            
+            # Decode bbox
+            x1_640, y1_640, x2_640, y2_640 = self._decode_bbox(
+                bboxes[i], cx, cy, stride
+            )
+            
+            # Transform to original coordinates
+            x1, y1 = self._transform_coords_to_original(
+                x1_640, y1_640, transform_info, original_w, original_h
+            )
+            x2, y2 = self._transform_coords_to_original(
+                x2_640, y2_640, transform_info, original_w, original_h
+            )
+            
+            # Decode landmarks
+            landmarks = self._decode_landmarks(
+                keypoints[i], cx, cy, stride, 
+                transform_info, original_w, original_h
+            )
+            
+            detections.append({
+                'bbox': [x1, y1, x2, y2],
+                'confidence': score,
+                'landmarks': landmarks
+            })
+        
+        return detections
+    
+    def _classify_and_sort_outputs(self, outputs_list):
+        """Classify model outputs into scores, bboxes, and keypoints"""
+        scores_out = []
+        bboxes_out = []
+        kps_out = []
+        
+        for arr in outputs_list:
+            # Flatten batch dim if present
+            if arr.ndim == 3 and arr.shape[0] == 1:
+                arr = arr[0]
+            
+            # Ensure 2D
+            if arr.ndim < 2 and len(arr.shape) == 1:
+                arr = arr.reshape(-1, 1)
+
+            cols = arr.shape[-1]
+            rows = arr.shape[0]
+            
+            if cols == 1:
+                scores_out.append((rows, arr))
+            elif cols == 4:
+                bboxes_out.append((rows, arr))
+            elif cols == 10:
+                kps_out.append((rows, arr))
+        
+        # Sort by number of anchors descending
+        scores_out.sort(key=lambda x: x[0], reverse=True)
+        bboxes_out.sort(key=lambda x: x[0], reverse=True)
+        kps_out.sort(key=lambda x: x[0], reverse=True)
+        
+        return scores_out, bboxes_out, kps_out
+
     def detect(self, image: np.ndarray, conf_threshold: Optional[float] = None,
                nms_threshold: Optional[float] = None) -> List[dict]:
         """
@@ -155,130 +337,51 @@ class FaceDetector:
         if nms_threshold is None:
             nms_threshold = self.nms_threshold
         
-        h, w = image.shape[:2]
+        original_h, original_w = image.shape[:2]
+        logger.debug(f"Detect called with image size: {original_w}x{original_h}")
         
         # Preprocess
-        input_data = self.preprocess(image)
+        input_data, transform_info = self.preprocess(image)
+        logger.debug(f"Transform info: {transform_info}")
         
         # Run inference
         outputs_list = self.session.run(self.output_names, {self.input_name: input_data})
         
-        # Robustly map outputs to (score, bbox, kps) tuples by size
-        # 1. Classify all outputs by their 2nd dimension (1, 4, 10)
-        scores_out = []
-        bboxes_out = []
-        kps_out = []
-        
-        for arr in outputs_list:
-            # Flatten batch dim if present (1, N, C) -> (N, C)
-            if arr.ndim == 3 and arr.shape[0] == 1:
-                arr = arr[0]
-            
-            # Now expected shapes: (N, 1), (N, 4), (N, 10)
-            if arr.ndim < 2:
-                 # Flattened? (N,)
-                 # Assume score?
-                 if len(arr.shape) == 1:
-                     arr = arr.reshape(-1, 1)
-
-            cols = arr.shape[-1]
-            rows = arr.shape[0] # Number of anchors
-            
-            if cols == 1:
-                scores_out.append((rows, arr))
-            elif cols == 4:
-                bboxes_out.append((rows, arr))
-            elif cols == 10:
-                kps_out.append((rows, arr))
-                
-        # 2. Sort each group by number of anchors descending (80x80=6400, ..., 5x5=25)
-        scores_out.sort(key=lambda x: x[0], reverse=True)
-        bboxes_out.sort(key=lambda x: x[0], reverse=True)
-        kps_out.sort(key=lambda x: x[0], reverse=True)
+        # Classify and sort outputs
+        scores_out, bboxes_out, kps_out = self._classify_and_sort_outputs(outputs_list)
         
         # Verify alignment
         if not (len(scores_out) == len(bboxes_out) == len(kps_out)):
-            logger.error(f"Output count mismatch: scores={len(scores_out)}, bboxes={len(bboxes_out)}, kps={len(kps_out)}")
+            logger.error(f"Output count mismatch: scores={len(scores_out)}, "
+                       f"bboxes={len(bboxes_out)}, kps={len(kps_out)}")
             return []
 
+        # Determine model topology
+        strides, num_anchors = self._determine_model_topology(scores_out)
+        
+        # Process each scale
         detections = []
-        
-        # SCRFD person_2.5g uses 5 scales
-        feat_sizes = [80, 40, 20, 10, 5]
-        strides = [8, 16, 32, 64, 128]
-        
-        # Use the actual number of received scales, in case model differs
-        num_scales = len(scores_out)
-        
         try:
-            for scale_idx in range(num_scales):
-                # Get the tensors for this scale (largest to smallest)
-                curr_size, score_tensor = scores_out[scale_idx]
-                _, bbox_tensor = bboxes_out[scale_idx]
-                _, kps_tensor = kps_out[scale_idx]
-                
-                # Derive stride from feature map size (640 / feat_size)
-                # feat_size is sqrt(curr_size)
-                feat_size = int(np.sqrt(curr_size))
-                stride = 640 // feat_size
-                
-                # logger.debug(f"Processing scale {scale_idx}: size={curr_size}, stride={stride}")
-
-                scores = score_tensor.reshape(-1)
-                bboxes = bbox_tensor
-                keypoints = kps_tensor
-                
-                # Process each anchor point
-                # Use numpy vectorization where possible for speed, but loop is fine for now
-                
-                # Pre-filter by confidence to reduce loop iterations
-                keep_indices = np.where(scores >= conf_threshold)[0]
-                
-                for i in keep_indices:
-                    score = float(scores[i])
-                    
-                    # Get anchor position
-                    h_idx = i // feat_size
-                    w_idx = i % feat_size
-                    
-                    # Center point
-                    cx = (w_idx + 0.5) * stride
-                    cy = (h_idx + 0.5) * stride
-                    
-                    # Decode bbox
-                    bbox_row = bboxes[i] # (4,)
-                    dx1, dy1, dx2, dy2 = bbox_row
-                    
-                    x1 = (cx - dx1 * stride) / 640 * w
-                    y1 = (cy - dy1 * stride) / 640 * h
-                    x2 = (cx + dx2 * stride) / 640 * w
-                    y2 = (cy + dy2 * stride) / 640 * h
-                    
-                    # Decode landmarks
-                    kps_row = keypoints[i] # (10,)
-                    landmarks = []
-                    for j in range(5):
-                        kpx = kps_row[j * 2]
-                        kpy = kps_row[j * 2 + 1]
-                        lx = (cx + kpx * stride) / 640 * w
-                        ly = (cy + kpy * stride) / 640 * h
-                        landmarks.append([lx, ly])
-                    
-                    detections.append({
-                        'bbox': [x1, y1, x2, y2],
-                        'confidence': score,
-                        'landmarks': landmarks
-                    })
+            for scale_idx in range(len(scores_out)):
+                scale_dets = self._process_scale_detections(
+                    scale_idx, scores_out, bboxes_out, kps_out,
+                    strides, num_anchors, transform_info,
+                    original_w, original_h, conf_threshold
+                )
+                detections.extend(scale_dets)
         except Exception as e:
             import traceback
             traceback.print_exc()
-            logger.error(f"Error parsing detections at scale {scale_idx}: {e}")
+            logger.error(f"Error parsing detections: {e}")
             raise e
-
-
         
         # Apply NMS
         detections = self.nms(detections, nms_threshold)
+        
+        logger.debug(f"Found {len(detections)} face(s) after NMS")
+        if len(detections) > 0:
+            logger.info(f"First detection: bbox={detections[0]['bbox']}, "
+                      f"conf={detections[0]['confidence']:.3f}")
         
         return detections
     
@@ -341,7 +444,7 @@ class FaceRecognizer:
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
         
-        logger.info(f"Face recognizer loaded")
+        logger.info("Face recognizer loaded")
     
     def _get_available_providers(self) -> List[str]:
         """Get available execution providers"""
@@ -502,10 +605,27 @@ class InferenceServicer(inference_pb2_grpc.FaceInferenceServicer):
             return inference_pb2.EmbeddingResponse()
     
     def CheckLiveness(self, request, context):
-        """Check face liveness (basic implementation)"""
+        """Check face liveness using multi-stage approach
+        
+        Strategy:
+        1. Try micromovement detection (temporal analysis of natural facial movements)
+        2. Try depth sensing if available (IR camera depth data)
+        3. Fallback to challenge-response system (nod/turn head movements)
+        
+        Current challenges available without model change:
+        - Head nod (up/down pitch detection via nose Y position)
+        - Head turn left/right (yaw detection via nose X position relative to eyes)
+        """
         try:
-            # Basic liveness - just return true for now
-            # TODO: Implement proper liveness detection
+            # TODO: Implement multi-stage liveness detection:
+            # 1. Micromovement detection - analyze frame-to-frame landmark shifts
+            #    for natural involuntary facial movements (breathing, micro-expressions)
+            # 2. Depth sensing - use IR camera depth data if available to detect
+            #    3D structure and reject flat photos/screens
+            # 3. Challenge-response - if above fail, request explicit head movement
+            #    via existing challenge system (detectNod/detectTurn in Go)
+            
+            # Basic placeholder - always returns true for now
             return inference_pb2.LivenessResponse(
                 is_live=True,
                 confidence=1.0,
@@ -523,12 +643,12 @@ class InferenceServicer(inference_pb2_grpc.FaceInferenceServicer):
             healthy=True,
             version=self.version,
             device=self.device,
-            models_loaded=["scrfd_person_2.5g", "arcface_r50"]
+            models_loaded=["scrfd_face_det_10g", "arcface_r50"]
         )
 
 
 def serve(host: str = "localhost", port: int = 50051,
-          detector_path: str = "../models/scrfd_person_2.5g.onnx",
+          detector_path: str = "../models/det_10g.onnx",
           recognizer_path: str = "../models/arcface_r50.onnx"):
     """Start gRPC server"""
     
@@ -561,7 +681,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LinuxHello Inference Service")
     parser.add_argument("--host", default="localhost", help="Host to bind to")
     parser.add_argument("--port", type=int, default=50051, help="Port to bind to")
-    parser.add_argument("--detector", default="../models/scrfd_person_2.5g.onnx",
+    parser.add_argument("--detector", default="../models/det_10g.onnx",
                        help="Path to face detector model")
     parser.add_argument("--recognizer", default="../models/arcface_r50.onnx",
                        help="Path to face recognizer model")

@@ -48,6 +48,14 @@ export interface LogEntry {
   component?: string;
 }
 
+export interface PAMServiceStatus {
+  ID: string;
+  Name: string;
+  PAMFile: string;
+  Status: string;
+  ModulePath: string;
+}
+
 export interface AppConfig {
   inference: { address: string; timeout: number };
   camera: { device: string; ir_device: string; width: number; height: number; fps: number; pixel_format: string; auto_exposure: boolean };
@@ -68,6 +76,7 @@ export function DownloadLogs(): Promise<string>;
 export function GetConfig(): Promise<AppConfig>;
 export function GetEnrollmentStatus(): Promise<EnrollmentStatus>;
 export function GetLogs(count: number): Promise<LogEntry[]>;
+export function GetPAMServices(): Promise<PAMServiceStatus[]>;
 export function GetPAMStatus(): Promise<string>;
 export function GetServiceStatus(): Promise<ServiceInfo>;
 export function GetUsers(): Promise<UserResponse[]>;

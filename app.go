@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"os"
 	"os/exec"
@@ -18,8 +20,18 @@ import (
 
 	"github.com/MrCodeEU/LinuxHello/internal/auth"
 	"github.com/MrCodeEU/LinuxHello/internal/config"
+	models "github.com/MrCodeEU/LinuxHello/pkg/models"
 	"github.com/sirupsen/logrus"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+// Constants for commonly used strings
+const (
+	errEngineNotInitialized = "engine not initialized"
+	svcLinuxHelloInference  = "linuxhello-inference"
+	pathLinuxHelloPAM       = "/usr/bin/linuxhello-pam"
+	pathLocalLinuxHelloPAM  = "/usr/local/bin/linuxhello-pam"
+	pathScriptLinuxHelloPAM = "./scripts/linuxhello-pam"
 )
 
 // App struct for Wails application
@@ -148,12 +160,21 @@ type LogEntry struct {
 	Component string `json:"component,omitempty"`
 }
 
+// PAMServiceStatus represents the status of a PAM service
+type PAMServiceStatus struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	PAMFile    string `json:"pamFile"`
+	Status     string `json:"status"` // "enabled", "disabled", "not installed"
+	ModulePath string `json:"modulePath"`
+}
+
 // User management bindings
 
 // GetUsers returns all enrolled users
 func (a *App) GetUsers() ([]UserResponse, error) {
 	if a.engine == nil {
-		return nil, fmt.Errorf("engine not initialized")
+		return nil, fmt.Errorf(errEngineNotInitialized)
 	}
 
 	users, err := a.engine.ListUsers()
@@ -175,7 +196,7 @@ func (a *App) GetUsers() ([]UserResponse, error) {
 // DeleteUser deletes a user's enrollment
 func (a *App) DeleteUser(username string) error {
 	if a.engine == nil {
-		return fmt.Errorf("engine not initialized")
+		return fmt.Errorf(errEngineNotInitialized)
 	}
 	return a.engine.DeleteUser(username)
 }
@@ -375,7 +396,7 @@ func (a *App) processEnrollFrame() bool {
 // RunAuthTest performs an authentication test
 func (a *App) RunAuthTest() (*AuthTestResult, error) {
 	if a.engine == nil {
-		return nil, fmt.Errorf("engine not initialized")
+		return nil, fmt.Errorf(errEngineNotInitialized)
 	}
 
 	a.mu.Lock()
@@ -465,7 +486,9 @@ func (a *App) SaveConfig(cfg *config.Config) error {
 	// Re-initialize engine with new config
 	a.mu.Lock()
 	if a.engine != nil {
-		a.engine.Close()
+		if err := a.engine.Close(); err != nil {
+			a.logger.Warnf("Error closing engine: %v", err)
+		}
 	}
 	a.cameraRunning = false
 
@@ -476,7 +499,9 @@ func (a *App) SaveConfig(cfg *config.Config) error {
 		return fmt.Errorf("failed to reinitialize engine with new config: %v", err)
 	}
 	a.engine = newEngine
-	a.engine.InitializeCamera()
+	if err := a.engine.InitializeCamera(); err != nil {
+		a.logger.Warnf("Failed to initialize camera: %v", err)
+	}
 	a.mu.Unlock()
 
 	return nil
@@ -491,6 +516,19 @@ func (a *App) StartCamera() error {
 
 // StopCamera stops the camera
 func (a *App) StopCamera() error {
+	// Add panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			a.logger.Errorf("Panic in StopCamera: %v", r)
+			// Try to recover state
+			a.cameraRunning = false
+			if a.streamCancel != nil {
+				a.streamCancel()
+				a.streamCancel = nil
+			}
+		}
+	}()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -543,28 +581,97 @@ func (a *App) StopCameraStream() {
 	}
 }
 
-func (a *App) streamCameraFrames(ctx context.Context) {
-	ticker := time.NewTicker(33 * time.Millisecond) // ~30fps
-	defer ticker.Stop()
-
-	consecutiveErrors := 0
-	const maxConsecutiveErrors = 30 // ~1 second at 30fps
-
+// runFaceDetectionLoop runs face detection at 5 FPS in a separate goroutine
+func (a *App) runFaceDetectionLoop(ctx context.Context, ticker *time.Ticker, lastDetections *[]models.Detection, detMu *sync.Mutex) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Skip if testing auth
 			a.mu.RLock()
 			testing := a.isTestingAuth
 			a.mu.RUnlock()
-			if testing {
+			if testing || a.engine == nil {
 				continue
 			}
 
 			frame, ok := a.engine.GetFrame(true)
 			if !ok || frame == nil {
+				continue
+			}
+
+			img, err := frame.ToImage()
+			if err != nil {
+				continue
+			}
+
+			enhanced := auth.EnhanceImage(img)
+			dets, err := a.engine.DetectFaces(enhanced)
+			if err == nil {
+				detMu.Lock()
+				*lastDetections = dets
+				detMu.Unlock()
+			}
+		}
+	}
+}
+
+// processStreamFrame processes and emits a single camera frame
+func (a *App) processStreamFrame(lastDetections []models.Detection) (bool, error) {
+	a.mu.RLock()
+	testing := a.isTestingAuth
+	a.mu.RUnlock()
+	if testing {
+		return true, nil // Continue but skip frame
+	}
+
+	frame, ok := a.engine.GetFrame(true)
+	if !ok || frame == nil {
+		return false, fmt.Errorf("no frame available")
+	}
+
+	img, err := frame.ToImage()
+	if err != nil {
+		return false, err
+	}
+
+	enhanced := auth.EnhanceImage(img)
+	frameWithBoxes := drawBoundingBoxes(enhanced, lastDetections)
+	base64Frame := a.encodeImageAsBase64(frameWithBoxes)
+
+	if base64Frame != "" {
+		runtime.EventsEmit(a.ctx, "camera:frame", base64Frame)
+	}
+
+	return true, nil
+}
+
+func (a *App) streamCameraFrames(ctx context.Context) {
+	streamTicker := time.NewTicker(33 * time.Millisecond)  // ~30 FPS for streaming
+	detectTicker := time.NewTicker(200 * time.Millisecond) // ~5 FPS for face detection
+	defer streamTicker.Stop()
+	defer detectTicker.Stop()
+
+	consecutiveErrors := 0
+	const maxConsecutiveErrors = 30 // ~1 second at 30fps
+
+	var lastDetections []models.Detection
+	var detMu sync.Mutex
+
+	// Face detection goroutine at 5 FPS
+	go a.runFaceDetectionLoop(ctx, detectTicker, &lastDetections, &detMu)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-streamTicker.C:
+			detMu.Lock()
+			dets := lastDetections
+			detMu.Unlock()
+
+			ok, err := a.processStreamFrame(dets)
+			if err != nil {
 				consecutiveErrors++
 				if consecutiveErrors >= maxConsecutiveErrors {
 					runtime.EventsEmit(a.ctx, "camera:error", "Camera stopped producing frames")
@@ -573,22 +680,94 @@ func (a *App) streamCameraFrames(ctx context.Context) {
 				continue
 			}
 
-			img, err := frame.ToImage()
-			if err != nil {
-				consecutiveErrors++
-				continue
+			if ok {
+				consecutiveErrors = 0
 			}
-
-			enhanced := auth.EnhanceImage(img)
-			base64Frame := a.encodeImageAsBase64(enhanced)
-			if base64Frame == "" {
-				continue
-			}
-
-			consecutiveErrors = 0
-			runtime.EventsEmit(a.ctx, "camera:frame", base64Frame)
 		}
 	}
+}
+
+// clampToImageBounds ensures coordinates are within image boundaries
+func clampToImageBounds(x1, y1, x2, y2 int, bounds image.Rectangle) (int, int, int, int) {
+	if x1 < 0 {
+		x1 = 0
+	}
+	if y1 < 0 {
+		y1 = 0
+	}
+	if x2 >= bounds.Max.X {
+		x2 = bounds.Max.X - 1
+	}
+	if y2 >= bounds.Max.Y {
+		y2 = bounds.Max.Y - 1
+	}
+	return x1, y1, x2, y2
+}
+
+// drawRectangleParams holds parameters for drawing a rectangle
+type drawRectangleParams struct {
+	rgba      *image.RGBA
+	x1, y1    int
+	x2, y2    int
+	boxColor  color.RGBA
+	thickness int
+	bounds    image.Rectangle
+}
+
+// drawRectangle draws a thick rectangle on the RGBA image
+func drawRectangle(params drawRectangleParams) {
+	for t := 0; t < params.thickness; t++ {
+		// Top and bottom edges
+		for x := params.x1; x <= params.x2; x++ {
+			if params.y1+t < params.bounds.Max.Y {
+				params.rgba.Set(x, params.y1+t, params.boxColor)
+			}
+			if params.y2-t >= 0 {
+				params.rgba.Set(x, params.y2-t, params.boxColor)
+			}
+		}
+		// Left and right edges
+		for y := params.y1; y <= params.y2; y++ {
+			if params.x1+t < params.bounds.Max.X {
+				params.rgba.Set(params.x1+t, y, params.boxColor)
+			}
+			if params.x2-t >= 0 {
+				params.rgba.Set(params.x2-t, y, params.boxColor)
+			}
+		}
+	}
+}
+
+// drawBoundingBoxes draws face detection bounding boxes onto the image
+func drawBoundingBoxes(img image.Image, detections []models.Detection) image.Image {
+	if len(detections) == 0 {
+		return img
+	}
+
+	bounds := img.Bounds()
+	rgba := image.NewRGBA(bounds)
+	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
+
+	boxColor := color.RGBA{0, 255, 0, 255} // Green
+	const thickness = 3
+
+	for _, det := range detections {
+		x1, y1, x2, y2 := clampToImageBounds(
+			int(det.X1), int(det.Y1), int(det.X2), int(det.Y2), bounds,
+		)
+		drawRectangle(drawRectangleParams{
+			rgba:      rgba,
+			x1:        x1,
+			y1:        y1,
+			x2:        x2,
+			y2:        y2,
+			boxColor:  boxColor,
+			thickness: thickness,
+			bounds:    bounds,
+		})
+	}
+
+	return rgba
 }
 
 func (a *App) encodeImageAsBase64(img image.Image) string {
@@ -608,7 +787,7 @@ func (a *App) ensureCameraRunning() error {
 	}
 
 	if a.engine == nil {
-		return fmt.Errorf("engine not initialized")
+		return fmt.Errorf(errEngineNotInitialized)
 	}
 
 	if err := a.engine.Start(); err != nil {
@@ -624,7 +803,7 @@ func (a *App) ensureCameraRunning() error {
 // Note: systemctl is-active/is-enabled return non-zero for inactive/disabled
 // but the output still contains the status string (e.g. "inactive", "disabled").
 func (a *App) GetServiceStatus() ServiceInfo {
-	out, _ := exec.Command("systemctl", "is-active", "linuxhello-inference").CombinedOutput()
+	out, _ := exec.Command("systemctl", "is-active", svcLinuxHelloInference).CombinedOutput()
 	status := strings.TrimSpace(string(out))
 	if status == "" {
 		status = "unknown"
@@ -651,14 +830,14 @@ func (a *App) ControlService(action string) (string, error) {
 		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
 			return string(out), fmt.Errorf("daemon-reload failed: %v", err)
 		}
-		cmd = exec.Command("systemctl", action, "linuxhello-inference")
+		cmd = exec.Command("systemctl", action, svcLinuxHelloInference)
 	case "stop", "disable":
-		cmd = exec.Command("systemctl", action, "linuxhello-inference")
+		cmd = exec.Command("systemctl", action, svcLinuxHelloInference)
 	case "restart":
 		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
 			return string(out), fmt.Errorf("daemon-reload failed: %v", err)
 		}
-		cmd = exec.Command("systemctl", "restart", "linuxhello-inference")
+		cmd = exec.Command("systemctl", "restart", svcLinuxHelloInference)
 	default:
 		return "", fmt.Errorf("invalid action: %s", action)
 	}
@@ -678,7 +857,119 @@ func (a *App) GetPAMStatus() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("PAM status check failed: %s (%v)", strings.TrimSpace(string(out)), err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return a.stripAnsi(strings.TrimSpace(string(out))), nil
+}
+
+// GetPAMServices returns parsed PAM service status
+// parsePAMServiceLine parses a single line from the PAM status table
+func parsePAMServiceLine(line string) (*PAMServiceStatus, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return nil, fmt.Errorf("insufficient fields")
+	}
+
+	serviceID := fields[0]
+	
+	// Handle multi-word status like "not installed"
+	var status string
+	var pamFileEndIdx int
+	
+	if len(fields) >= 2 && fields[len(fields)-2] == "not" && fields[len(fields)-1] == "installed" {
+		status = "not installed"
+		pamFileEndIdx = len(fields) - 2
+	} else {
+		status = fields[len(fields)-1]
+		pamFileEndIdx = len(fields) - 1
+	}
+	
+	pamFile := strings.Join(fields[1:pamFileEndIdx], " ")
+
+	return &PAMServiceStatus{
+		ID:      serviceID,
+		Name:    serviceID,
+		PAMFile: pamFile,
+		Status:  status,
+	}, nil
+}
+
+// extractModulePath extracts the PAM module path from a status line
+func extractModulePath(line string) string {
+	if !strings.Contains(line, "PAM module installed at") {
+		return ""
+	}
+	parts := strings.Split(line, "at ")
+	if len(parts) == 2 {
+		return strings.TrimSpace(parts[1])
+	}
+	return ""
+}
+
+// isTableStart returns true if the line is the start of the service table
+func isTableStart(line string) bool {
+	return strings.Contains(line, "SERVICE") && strings.Contains(line, "STATUS")
+}
+
+// isTableEnd returns true if the line marks the end of the service table
+func isTableEnd(line string) bool {
+	return line == "" || strings.Contains(line, "Backups:")
+}
+
+// isSeparatorLine returns true if the line is a table separator
+func isSeparatorLine(line string) bool {
+	return strings.Contains(line, "═") || strings.Contains(line, "─")
+}
+
+func (a *App) GetPAMServices() ([]PAMServiceStatus, error) {
+	script := a.findPAMScript()
+
+	cmd := exec.Command(script, "status")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("PAM status check failed: %v", err)
+	}
+
+	var services []PAMServiceStatus
+	var modulePath string
+	inTable := false
+
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = a.stripAnsi(line)
+		line = strings.TrimSpace(line)
+
+		if isTableStart(line) {
+			inTable = true
+			continue
+		}
+
+		if inTable && isTableEnd(line) {
+			inTable = false
+			continue
+		}
+
+		if isSeparatorLine(line) {
+			continue
+		}
+
+		if path := extractModulePath(line); path != "" {
+			modulePath = path
+			continue
+		}
+
+		if inTable && line != "" {
+			service, err := parsePAMServiceLine(line)
+			if err == nil {
+				services = append(services, *service)
+			}
+		}
+	}
+
+	// Set module path for all services
+	for i := range services {
+		services[i].ModulePath = modulePath
+	}
+
+	return services, nil
 }
 
 // PAMAction performs a PAM action
@@ -707,19 +998,30 @@ func (a *App) PAMToggle(enable bool) (string, error) {
 		action = "enable"
 	}
 
-	cmd := exec.Command("sudo", script, action)
+	cmd := exec.Command(script, action, "--yes", "sudo")
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return a.stripAnsi(string(out)), err
 }
 
 func (a *App) findPAMScript() string {
+	// Prefer linuxhello-pam (supports multiple services)
+	if _, err := os.Stat(pathScriptLinuxHelloPAM); err == nil {
+		return pathScriptLinuxHelloPAM
+	}
+	if _, err := os.Stat(pathLinuxHelloPAM); err == nil {
+		return pathLinuxHelloPAM
+	}
+	if _, err := os.Stat(pathLocalLinuxHelloPAM); err == nil {
+		return pathLocalLinuxHelloPAM
+	}
+	// Fallback to old manage-pam.sh (sudo only)
 	if _, err := os.Stat("./scripts/manage-pam.sh"); err == nil {
 		return "./scripts/manage-pam.sh"
 	}
-	return "/usr/bin/linuxhello-pam"
+	return pathLinuxHelloPAM
 }
 
-var ansiRegex = regexp.MustCompile(`[\x1b\x9b][\[]()#;?]*((?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~]*)*)?[\x07]|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))`)
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 func (a *App) stripAnsi(str string) string {
 	return ansiRegex.ReplaceAllString(str, "")
@@ -728,12 +1030,59 @@ func (a *App) stripAnsi(str string) string {
 // Logs bindings
 
 // GetLogs returns recent system logs
+// parseLogLevel converts journald priority to log level
+func parseLogLevel(priority string) string {
+	switch priority {
+	case "3":
+		return "error"
+	case "4":
+		return "warn"
+	case "6":
+		return "info"
+	case "7":
+		return "debug"
+	default:
+		return "info"
+	}
+}
+
+// parseJournalLine parses a single JSON line from journalctl output
+func parseJournalLine(line string) (*LogEntry, error) {
+	var entry struct {
+		Timestamp        string `json:"__REALTIME_TIMESTAMP"`
+		Message          string `json:"MESSAGE"`
+		Priority         string `json:"PRIORITY"`
+		SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
+	}
+
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		return nil, err
+	}
+
+	if entry.Timestamp == "" {
+		return nil, fmt.Errorf("missing timestamp")
+	}
+
+	micros, err := strconv.ParseInt(entry.Timestamp, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	timestamp := time.Unix(micros/1000000, (micros%1000000)*1000)
+	return &LogEntry{
+		Timestamp: timestamp.Format("2006-01-02 15:04:05"),
+		Level:     parseLogLevel(entry.Priority),
+		Message:   entry.Message,
+		Component: entry.SyslogIdentifier,
+	}, nil
+}
+
 func (a *App) GetLogs(count int) ([]LogEntry, error) {
 	if count <= 0 {
 		count = 100
 	}
 
-	cmd := exec.Command("journalctl", "-u", "linuxhello-inference.service", "--no-pager", "-n", strconv.Itoa(count), "--output", "json")
+	cmd := exec.Command("journalctl", "-u", svcLinuxHelloInference+".service", "--no-pager", "-n", strconv.Itoa(count), "--output", "json")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read logs: %v", err)
@@ -747,41 +1096,11 @@ func (a *App) GetLogs(count int) ([]LogEntry, error) {
 			continue
 		}
 
-		var entry struct {
-			Timestamp        string `json:"__REALTIME_TIMESTAMP"`
-			Message          string `json:"MESSAGE"`
-			Priority         string `json:"PRIORITY"`
-			SyslogIdentifier string `json:"SYSLOG_IDENTIFIER"`
-		}
-
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		logEntry, err := parseJournalLine(line)
+		if err != nil {
 			continue
 		}
-
-		if entry.Timestamp != "" {
-			if micros, err := strconv.ParseInt(entry.Timestamp, 10, 64); err == nil {
-				timestamp := time.Unix(micros/1000000, (micros%1000000)*1000)
-
-				level := "info"
-				switch entry.Priority {
-				case "3":
-					level = "error"
-				case "4":
-					level = "warn"
-				case "6":
-					level = "info"
-				case "7":
-					level = "debug"
-				}
-
-				logs = append(logs, LogEntry{
-					Timestamp: timestamp.Format("2006-01-02 15:04:05"),
-					Level:     level,
-					Message:   entry.Message,
-					Component: entry.SyslogIdentifier,
-				})
-			}
-		}
+		logs = append(logs, *logEntry)
 	}
 
 	// Reverse to show most recent first
@@ -794,7 +1113,7 @@ func (a *App) GetLogs(count int) ([]LogEntry, error) {
 
 // DownloadLogs returns comprehensive logs for download
 func (a *App) DownloadLogs() (string, error) {
-	cmd := exec.Command("journalctl", "-u", "linuxhello-inference.service", "--no-pager", "-n", "1000")
+	cmd := exec.Command("journalctl", "-u", svcLinuxHelloInference+".service", "--no-pager", "-n", "1000")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to generate log download: %v", err)

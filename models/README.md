@@ -13,11 +13,12 @@ make models
 
 ### 1. SCRFD Face Detection
 
-**File**: `scrfd_person_2.5g.onnx` (~2.5 MB)
+**File**: `det_10g.onnx` (~16.9 MB)
 
 ```bash
-wget -O scrfd_person_2.5g.onnx \
-  "https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_person_2.5g.onnx"
+curl -L -o buffalo_l.zip "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l.zip"
+unzip -j buffalo_l.zip det_10g.onnx
+rm buffalo_l.zip
 ```
 
 ### 2. ArcFace Recognition

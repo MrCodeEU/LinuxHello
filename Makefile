@@ -1,6 +1,6 @@
 # LinuxHello - Face Authentication for Linux
 
-.PHONY: all build clean test install help setup gui
+.PHONY: all build clean test install help setup gui models
 
 # Variables
 BINARY_NAME=linuxhello
@@ -65,19 +65,25 @@ deps: ## Download Go dependencies
 
 models: ## Download AI models
 	@mkdir -p models
-	@if [ ! -f models/scrfd_person_2.5g.onnx ]; then \
-		echo "Downloading SCRFD face detection model..."; \
-		curl -L -o models/scrfd_person_2.5g.onnx \
-			"https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_person_2.5g.onnx" 2>/dev/null || \
-		wget -q -O models/scrfd_person_2.5g.onnx \
-			"https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_person_2.5g.onnx"; \
+	@if [ ! -f models/det_10g.onnx ]; then \
+		echo "Downloading SCRFD face detection model (det_10g from buffalo_l)..."; \
+		if curl -L -o /tmp/buffalo_l.zip \
+			"https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l.zip" 2>/dev/null; then \
+			unzip -o -j /tmp/buffalo_l.zip det_10g.onnx -d models/ && rm -f /tmp/buffalo_l.zip; \
+		elif wget -q -O /tmp/buffalo_l.zip \
+			"https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l.zip"; then \
+			unzip -o -j /tmp/buffalo_l.zip det_10g.onnx -d models/ && rm -f /tmp/buffalo_l.zip; \
+		else \
+			echo "Failed to download det_10g.onnx. Install curl or wget."; \
+			exit 1; \
+		fi; \
 	fi
 	@if [ ! -f models/arcface_r50.onnx ]; then \
 		echo "Downloading ArcFace recognition model..."; \
 		curl -L -o models/arcface_r50.onnx \
-			"https://huggingface.co/lithiumice/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx" 2>/dev/null || \
+			"https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx" 2>/dev/null || \
 		wget -q -O models/arcface_r50.onnx \
-			"https://huggingface.co/lithiumice/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx"; \
+			"https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx"; \
 	fi
 
 # =============================================================================
@@ -101,15 +107,19 @@ build-pam: ## Build PAM module
 # =============================================================================
 
 gui: build-app ## Build and launch the desktop GUI (requires sudo)
+	@$(MAKE) stop-service
 	@$(MAKE) start-service-bg
 	@sudo ./bin/$(BINARY_NAME)
 
 start-service-bg: ## Start inference service (background)
 	@mkdir -p logs
 	@if [ -f "$$HOME/.ryzen-ai/bin/activate" ]; then \
-		cd python-service && bash -c "source $$HOME/.ryzen-ai/bin/activate && nohup python3 inference_service.py > ../logs/inference.log 2>&1 & echo \$$! > ../logs/inference.pid"; \
+		. $$HOME/.ryzen-ai/bin/activate && \
+		cd python-service && \
+		nohup python3 inference_service.py > $(CURDIR)/logs/inference.log 2>&1 & echo $$! > $(CURDIR)/logs/inference.pid; \
 	elif [ -f "$(PYTHON_VENV)/bin/python3" ]; then \
-		cd python-service && nohup ./venv/bin/python3 inference_service.py > ../logs/inference.log 2>&1 & echo $$! > ../logs/inference.pid; \
+		cd python-service && \
+		nohup ./venv/bin/python3 inference_service.py > $(CURDIR)/logs/inference.log 2>&1 & echo $$! > $(CURDIR)/logs/inference.pid; \
 	else \
 		echo "No Python environment. Run: make setup"; \
 		exit 1; \
@@ -118,12 +128,9 @@ start-service-bg: ## Start inference service (background)
 	@echo "Service started (PID: $$(cat logs/inference.pid))"
 
 stop-service: ## Stop inference service
-	@if [ -f logs/inference.pid ]; then \
-		kill $$(cat logs/inference.pid) 2>/dev/null && echo "Service stopped" || echo "Service not running"; \
-		rm -f logs/inference.pid; \
-	else \
-		pkill -f "python.*inference_service.py" 2>/dev/null && echo "Service stopped" || echo "No service running"; \
-	fi
+	@pkill -f "[p]ython3.*inference_service" 2>/dev/null; \
+	rm -f logs/inference.pid; \
+	echo "Service stopped"
 
 dev-deps: ## Install development dependencies
 	@if command -v dnf >/dev/null 2>&1; then \
@@ -213,7 +220,7 @@ install: build ## Install system-wide
 	install -m 644 configs/linuxhello.conf $(DESTDIR)$(SYSCONFDIR)/linuxhello/
 	cp -r python-service/*.py python-service/requirements.txt $(DESTDIR)/opt/linuxhello/python-service/
 	cp systemd/linuxhello-inference.service /etc/systemd/system/
-	@if [ -f models/scrfd_person_2.5g.onnx ]; then cp models/*.onnx $(DESTDIR)/opt/linuxhello/models/; fi
+	@if [ -f models/det_10g.onnx ]; then cp models/*.onnx $(DESTDIR)/opt/linuxhello/models/; fi
 	install -m 755 scripts/linuxhello-pam $(DESTDIR)$(BINDIR)/
 	@systemctl daemon-reload 2>/dev/null || true
 	@echo ""

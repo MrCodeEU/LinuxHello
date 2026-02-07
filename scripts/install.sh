@@ -119,7 +119,7 @@ LinuxHello ONNX Models
 Please download the following models and place them in this directory:
 
 1. SCRFD 2.5G (Face Detection)
-   - File: scrfd_person_2.5g.onnx
+   - File: det_10g.onnx
    - Source: https://github.com/deepinsight/insightface
    - Size: ~3-5 MB
 

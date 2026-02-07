@@ -46,16 +46,16 @@ func (f *Frame) ToImage() (image.Image, error) {
 
 // Camera represents a V4L2 camera device
 type Camera struct {
-	device    *device.Device
-	config    config.CameraConfig
-	frameChan chan *Frame
-	ctx       context.Context
-	cancel    context.CancelFunc
-	mu        sync.RWMutex // Protect concurrent access
-	stopOnce  sync.Once
-	isRunning bool
-	logger    Logger
-	wg        sync.WaitGroup
+	device     *device.Device
+	config     config.CameraConfig
+	frameChan  chan *Frame
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.RWMutex // Protect concurrent access
+	isStopping bool         // Flag to prevent concurrent stops
+	isRunning  bool
+	logger     Logger
+	wg         sync.WaitGroup
 }
 
 // Logger is a simple interface for logging
@@ -136,11 +136,28 @@ func (c *Camera) Start() error {
 	}
 
 	c.ctx, c.cancel = context.WithCancel(context.Background())
-	c.stopOnce = sync.Once{}
 
 	// Start the device
 	if err := c.device.Start(c.ctx); err != nil {
 		return fmt.Errorf("failed to start camera: %w", err)
+	}
+
+	// Get actual resolution after negotiation
+	if fmtDesc, err := c.device.GetPixFormat(); err == nil {
+		actualWidth := int(fmtDesc.Width)
+		actualHeight := int(fmtDesc.Height)
+
+		if actualWidth != c.config.Width || actualHeight != c.config.Height {
+			c.logger.Infof("Camera resolution mismatch! Config: %dx%d, Actual: %dx%d - Using actual dimensions",
+				c.config.Width, c.config.Height, actualWidth, actualHeight)
+			// Update config to match actual
+			c.config.Width = actualWidth
+			c.config.Height = actualHeight
+		} else {
+			c.logger.Infof("Camera resolution confirmed: %dx%d", actualWidth, actualHeight)
+		}
+	} else {
+		c.logger.Infof("Warning: Could not verify camera resolution: %v", err)
 	}
 
 	c.isRunning = true
@@ -162,14 +179,12 @@ func (c *Camera) Stop() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if !c.isRunning {
+	if !c.isRunning || c.isStopping {
 		return nil
 	}
 
-	c.stopOnce.Do(func() {
-		c.performSafeShutdown()
-	})
-
+	c.isStopping = true
+	c.performSafeShutdown()
 	c.logger.Infof("Camera stopped successfully")
 	return nil
 }
@@ -258,8 +273,7 @@ func (c *Camera) closeDevice() {
 // resetState resets the camera state for potential restart
 func (c *Camera) resetState() {
 	c.isRunning = false
-	// Reset stopOnce so we can start again
-	c.stopOnce = sync.Once{}
+	c.isStopping = false
 }
 
 // GetFrame returns the next available frame (thread-safe)
@@ -286,6 +300,8 @@ func (c *Camera) GetFrameChan() <-chan *Frame {
 func (c *Camera) captureLoop() {
 	defer c.wg.Done()
 	frameChan := c.device.GetOutput()
+
+	firstFrame := true
 
 	for {
 		select {
@@ -321,6 +337,10 @@ func (c *Camera) captureLoop() {
 				Height:    c.config.Height,
 				Format:    pixelFormat,
 				Timestamp: time.Now(),
+			}
+
+			if firstFrame {
+				firstFrame = false
 			}
 
 			// Non-blocking send

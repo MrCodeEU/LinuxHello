@@ -1,7 +1,6 @@
 import * as App from '../wailsjs/go/main/App'
-import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 
-export type { UserResponse, EnrollmentStatus, AuthTestResult, ServiceInfo, LogEntry, AppConfig } from '../wailsjs/go/main/App'
+export type { UserResponse, EnrollmentStatus, AuthTestResult, ServiceInfo, LogEntry, AppConfig, PAMServiceStatus } from '../wailsjs/go/main/App'
 
 // User management
 export const getUsers = () => App.GetUsers()
@@ -31,6 +30,7 @@ export const controlService = (action: string) => App.ControlService(action)
 
 // PAM
 export const getPAMStatus = () => App.GetPAMStatus()
+export const getPAMServices = () => App.GetPAMServices()
 export const pamAction = (action: string, service: string) => App.PAMAction(action, service)
 export const pamToggle = (enable: boolean) => App.PAMToggle(enable)
 
@@ -39,4 +39,4 @@ export const getLogs = (count: number) => App.GetLogs(count)
 export const downloadLogs = () => App.DownloadLogs()
 
 // Event subscriptions
-export { EventsOn, EventsOff }
+export { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'

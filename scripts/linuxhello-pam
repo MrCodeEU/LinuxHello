@@ -25,7 +25,7 @@ NC='\033[0m'
 BACKUP_DIR="/var/lib/linuxhello/pam-backups"
 PAM_MODULE="/usr/local/lib/security/pam_linuxhello.so"
 # Also check system PAM directories
-SYSTEM_PAM_DIRS="/lib64/security /lib/x86_64-linux-gnu/security /lib/security /usr/lib/security"
+SYSTEM_PAM_DIRS="/lib64/security /usr/lib64/security /lib/x86_64-linux-gnu/security /lib/security /usr/lib/security"
 FACELOCK_MARKER="# LinuxHello face authentication"
 
 # Find the actual PAM module location
@@ -407,8 +407,9 @@ show_status() {
     # Check PAM module
     echo "PAM Module Status"
     echo "───────────────────────────────────────────────────────────"
-    if [ -f "$PAM_MODULE" ]; then
-        print_success "PAM module installed at $PAM_MODULE"
+    local module_path=$(find_pam_module)
+    if [ -n "$module_path" ]; then
+        print_success "PAM module installed at $module_path"
     else
         print_warning "PAM module NOT installed"
         echo "         Run 'sudo make install' to install"

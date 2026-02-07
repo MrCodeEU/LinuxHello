@@ -30,6 +30,10 @@ export function GetLogs(arg1) {
   return window['go']['main']['App']['GetLogs'](arg1);
 }
 
+export function GetPAMServices() {
+  return window['go']['main']['App']['GetPAMServices']();
+}
+
 export function GetPAMStatus() {
   return window['go']['main']['App']['GetPAMStatus']();
 }
