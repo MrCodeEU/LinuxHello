@@ -869,11 +869,11 @@ func parsePAMServiceLine(line string) (*PAMServiceStatus, error) {
 	}
 
 	serviceID := fields[0]
-	
+
 	// Handle multi-word status like "not installed"
 	var status string
 	var pamFileEndIdx int
-	
+
 	if len(fields) >= 2 && fields[len(fields)-2] == "not" && fields[len(fields)-1] == "installed" {
 		status = "not installed"
 		pamFileEndIdx = len(fields) - 2
@@ -881,7 +881,7 @@ func parsePAMServiceLine(line string) (*PAMServiceStatus, error) {
 		status = fields[len(fields)-1]
 		pamFileEndIdx = len(fields) - 1
 	}
-	
+
 	pamFile := strings.Join(fields[1:pamFileEndIdx], " ")
 
 	return &PAMServiceStatus{
