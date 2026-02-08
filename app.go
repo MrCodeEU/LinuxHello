@@ -10,8 +10,11 @@ import (
 	"image/color"
 	"image/draw"
 	"image/jpeg"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -56,6 +59,13 @@ type App struct {
 	streamMu     sync.Mutex
 }
 
+// emitEvent safely emits an event if context is available
+func (a *App) emitEvent(eventName string, data interface{}) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, eventName, data)
+	}
+}
+
 // NewApp creates a new App instance
 func NewApp() *App {
 	return &App{
@@ -82,15 +92,27 @@ func (a *App) startup(ctx context.Context) {
 		a.logger.SetLevel(logrus.DebugLevel)
 	}
 
-	// Create auth engine
+	// Ensure inference service is running BEFORE creating the engine
+	if err := a.ensureInferenceServiceRunning(); err != nil {
+		a.logger.Errorf("Failed to start inference service: %v", err)
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			runtime.EventsEmit(a.ctx, "app:error", fmt.Sprintf("Inference service unavailable: %v", err))
+		}()
+		// Start watchdog anyway so it can recover later
+		go a.startInferenceServiceWatchdog()
+		return
+	}
+
+	// Create auth engine (inference service is now confirmed running)
 	a.engine, err = auth.NewEngine(a.cfg, a.logger)
 	if err != nil {
 		a.logger.Errorf("Failed to create auth engine: %v", err)
-		// Notify frontend so it can show an error state
 		go func() {
-			time.Sleep(500 * time.Millisecond) // wait for frontend to be ready
+			time.Sleep(500 * time.Millisecond)
 			runtime.EventsEmit(a.ctx, "app:error", fmt.Sprintf("Failed to initialize auth engine: %v", err))
 		}()
+		go a.startInferenceServiceWatchdog()
 		return
 	}
 
@@ -98,6 +120,9 @@ func (a *App) startup(ctx context.Context) {
 	if err := a.engine.InitializeCamera(); err != nil {
 		a.logger.Errorf("Failed to initialize camera: %v", err)
 	}
+
+	// Start inference service watchdog for ongoing monitoring
+	go a.startInferenceServiceWatchdog()
 }
 
 // shutdown is called when the app is closing
@@ -110,6 +135,157 @@ func (a *App) shutdown(ctx context.Context) {
 			a.logger.WithError(err).Error("Failed to close engine")
 		}
 	}
+}
+
+// ensureInferenceServiceRunning checks if the inference service is running, and starts it if not.
+// The Python inference service can take 5-10s to load ONNX models, so we poll generously.
+func (a *App) ensureInferenceServiceRunning() error {
+	if a.isInferenceServiceRunning() {
+		a.logger.Info("Inference service is already running")
+		return nil
+	}
+
+	a.logger.Info("Inference service not running, attempting to start...")
+
+	// Start the process (startInferenceService waits 2s internally)
+	startErr := a.startInferenceService()
+	if startErr != nil {
+		a.logger.Warnf("Start returned error (may still be loading models): %v", startErr)
+	}
+
+	// Poll for up to 15 seconds — ONNX model loading can be slow
+	for i := 0; i < 15; i++ {
+		if a.isInferenceServiceRunning() {
+			a.logger.Info("Inference service is ready")
+			return nil
+		}
+		a.logger.Debugf("Waiting for inference service... (%d/15)", i+1)
+		time.Sleep(1 * time.Second)
+	}
+
+	return fmt.Errorf("inference service not responding after 15s (start error: %v)", startErr)
+}
+
+// startInferenceServiceWatchdog monitors and auto-starts the inference service
+func (a *App) startInferenceServiceWatchdog() {
+	// Initial check and start
+	if !a.isInferenceServiceRunning() {
+		a.logger.Info("Inference service not running, starting...")
+		if err := a.startInferenceService(); err != nil {
+			a.logger.Errorf("Failed to start inference service: %v", err)
+			a.emitEvent("inference:error", fmt.Sprintf("Failed to start inference service: %v", err))
+		} else {
+			a.logger.Info("Inference service started successfully")
+			a.emitEvent("inference:started", true)
+		}
+	}
+
+	// Periodic health check (every 30 seconds)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			if !a.isInferenceServiceRunning() {
+				a.logger.Warn("Inference service stopped, restarting...")
+				a.emitEvent("inference:restarting", true)
+				if err := a.startInferenceService(); err != nil {
+					a.logger.Errorf("Failed to restart inference service: %v", err)
+					a.emitEvent("inference:error", fmt.Sprintf("Failed to restart: %v", err))
+				} else {
+					a.logger.Info("Inference service restarted successfully")
+					a.emitEvent("inference:started", true)
+				}
+			}
+		}
+	}
+}
+
+// isInferenceServiceRunning checks if the Python inference service is running
+func (a *App) isInferenceServiceRunning() bool {
+	// Try to connect to the gRPC service with health check
+	client, err := models.NewInferenceClient("localhost:50051")
+	if err != nil {
+		return false
+	}
+	defer client.Close()
+
+	// If NewInferenceClient succeeds, it means the health check passed
+	return true
+}
+
+// startInferenceService starts the Python inference service
+func (a *App) startInferenceService() error {
+	// Find the python-service directory
+	serviceDir := ""
+	possiblePaths := []string{
+		"./python-service",                     // Development
+		"/usr/share/linuxhello/python-service", // System install
+		"/opt/linuxhello/python-service",       // Alternative system install
+	}
+
+	for _, path := range possiblePaths {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			serviceDir = path
+			break
+		}
+	}
+
+	if serviceDir == "" {
+		return fmt.Errorf("python-service directory not found")
+	}
+
+	// Find Python executable
+	pythonCmd := "python3"
+	if _, err := exec.LookPath("python3"); err != nil {
+		if _, err := exec.LookPath("python"); err != nil {
+			return fmt.Errorf("python executable not found")
+		}
+		pythonCmd = "python"
+	}
+
+	// Start the service
+	scriptPath := filepath.Join(serviceDir, "inference_service.py")
+	cmd := exec.Command(pythonCmd, scriptPath)
+	cmd.Dir = serviceDir
+
+	// Redirect output to log file
+	logDir := "./logs"
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		os.MkdirAll(logDir, 0755)
+	}
+
+	logFile, err := os.OpenFile(filepath.Join(logDir, "inference.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		a.logger.Warnf("Failed to open log file: %v", err)
+	} else {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start service: %w", err)
+	}
+
+	// Save PID for later reference
+	pidFile := filepath.Join(logDir, "inference.pid")
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
+		a.logger.Warnf("Failed to write PID file: %v", err)
+	}
+
+	// Wait a bit for service to start
+	time.Sleep(2 * time.Second)
+
+	// Verify it's running
+	if !a.isInferenceServiceRunning() {
+		return fmt.Errorf("service started but not responding")
+	}
+
+	return nil
 }
 
 // Response types for frontend
@@ -167,6 +343,22 @@ type PAMServiceStatus struct {
 	PAMFile    string `json:"pamFile"`
 	Status     string `json:"status"` // "enabled", "disabled", "not installed"
 	ModulePath string `json:"modulePath"`
+}
+
+// ModelStatus represents the status of ONNX models
+type ModelStatus struct {
+	DetectionModel   ModelInfo `json:"detectionModel"`
+	RecognitionModel ModelInfo `json:"recognitionModel"`
+	AllModelsPresent bool      `json:"allModelsPresent"`
+}
+
+// ModelInfo contains information about a single model file
+type ModelInfo struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Exists   bool   `json:"exists"`
+	Size     int64  `json:"size"`
+	Required bool   `json:"required"`
 }
 
 // User management bindings
@@ -1119,4 +1311,225 @@ func (a *App) DownloadLogs() (string, error) {
 		return "", fmt.Errorf("failed to generate log download: %v", err)
 	}
 	return string(output), nil
+}
+
+// Model management bindings
+
+// CheckModels checks if required ONNX models are present
+func (a *App) CheckModels() (ModelStatus, error) {
+	// Prefer local models directory for development, then check system locations
+	modelDirs := []string{
+		"./models",
+		"/usr/share/linuxhello/models",
+		"/opt/linuxhello/models",
+	}
+
+	var modelDir string
+	for _, dir := range modelDirs {
+		if _, err := os.Stat(dir); err == nil {
+			modelDir = dir
+			break
+		}
+	}
+
+	// If no directory exists, use ./models as default for download
+	if modelDir == "" {
+		modelDir = "./models"
+	}
+
+	detectionModel := ModelInfo{
+		Name:     "det_10g.onnx",
+		Path:     filepath.Join(modelDir, "det_10g.onnx"),
+		Required: true,
+	}
+
+	recognitionModel := ModelInfo{
+		Name:     "arcface_r50.onnx",
+		Path:     filepath.Join(modelDir, "arcface_r50.onnx"),
+		Required: true,
+	}
+
+	// Check if files exist
+	if stat, err := os.Stat(detectionModel.Path); err == nil {
+		detectionModel.Exists = true
+		detectionModel.Size = stat.Size()
+	}
+
+	if stat, err := os.Stat(recognitionModel.Path); err == nil {
+		recognitionModel.Exists = true
+		recognitionModel.Size = stat.Size()
+	}
+
+	allPresent := detectionModel.Exists && recognitionModel.Exists
+
+	return ModelStatus{
+		DetectionModel:   detectionModel,
+		RecognitionModel: recognitionModel,
+		AllModelsPresent: allPresent,
+	}, nil
+}
+
+// DownloadModels downloads the required ONNX models with progress tracking
+func (a *App) DownloadModels() error {
+	// Prefer local models directory for development
+	modelDirs := []string{
+		"./models",
+		"/usr/share/linuxhello/models",
+		"/opt/linuxhello/models",
+	}
+
+	var modelDir string
+	for _, dir := range modelDirs {
+		if _, err := os.Stat(dir); err == nil {
+			modelDir = dir
+			break
+		}
+	}
+
+	// If no directory exists, create ./models
+	if modelDir == "" {
+		modelDir = "./models"
+	}
+
+	// Ensure model directory exists
+	if err := os.MkdirAll(modelDir, 0755); err != nil {
+		return fmt.Errorf("failed to create model directory: %v", err)
+	}
+
+	a.logger.Infof("Downloading models to: %s", modelDir)
+
+	// Download detection model if missing
+	detModelPath := filepath.Join(modelDir, "det_10g.onnx")
+	if _, err := os.Stat(detModelPath); os.IsNotExist(err) {
+		a.logger.Info("Downloading face detection model (det_10g.onnx)...")
+		a.emitEvent("model:download:start", map[string]interface{}{
+			"model":   "detection",
+			"message": "Starting download of face detection model (17MB)...",
+		})
+		a.emitEvent("model:download:progress", map[string]interface{}{
+			"model":    "detection",
+			"status":   "downloading",
+			"message":  "Downloading face detection model (17MB)...",
+			"progress": 0,
+		})
+
+		if err := a.downloadFileWithProgress(
+			"https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/det_10g.onnx",
+			detModelPath,
+			"detection",
+		); err != nil {
+			a.emitEvent("model:download:error", map[string]interface{}{
+				"model":   "detection",
+				"error":   err.Error(),
+				"message": "Failed to download detection model",
+			})
+			return fmt.Errorf("failed to download detection model: %v", err)
+		}
+
+		a.emitEvent("model:download:complete", map[string]interface{}{
+			"model":   "detection",
+			"message": "Detection model downloaded successfully",
+		})
+		a.logger.Info("✓ Face detection model downloaded successfully")
+	}
+
+	// Download recognition model if missing
+	recModelPath := filepath.Join(modelDir, "arcface_r50.onnx")
+	if _, err := os.Stat(recModelPath); os.IsNotExist(err) {
+		a.logger.Info("Downloading face recognition model (arcface_r50.onnx)...")
+		a.emitEvent("model:download:start", map[string]interface{}{
+			"model":   "recognition",
+			"message": "Starting download of face recognition model (170MB)...",
+		})
+		a.emitEvent("model:download:progress", map[string]interface{}{
+			"model":    "recognition",
+			"status":   "downloading",
+			"message":  "Downloading face recognition model (170MB)...",
+			"progress": 0,
+		})
+
+		if err := a.downloadFileWithProgress(
+			"https://huggingface.co/lithiumice/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx",
+			recModelPath,
+			"recognition",
+		); err != nil {
+			a.emitEvent("model:download:error", map[string]interface{}{
+				"model":   "recognition",
+				"error":   err.Error(),
+				"message": "Failed to download recognition model",
+			})
+			return fmt.Errorf("failed to download recognition model: %v", err)
+		}
+
+		a.emitEvent("model:download:complete", map[string]interface{}{
+			"model":   "recognition",
+			"message": "Recognition model downloaded successfully",
+		})
+		a.logger.Info("✓ Face recognition model downloaded successfully")
+	}
+
+	a.logger.Info("✓✓ All models downloaded successfully!")
+	return nil
+}
+
+// downloadFileWithProgress downloads a file with progress tracking
+func (a *App) downloadFileWithProgress(url, filepath, modelName string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Get total size
+	totalSize := resp.ContentLength
+	var downloaded int64
+
+	// Create buffer for copying with progress updates
+	buf := make([]byte, 32*1024) // 32KB chunks
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			_, writeErr := out.Write(buf[:n])
+			if writeErr != nil {
+				return writeErr
+			}
+			downloaded += int64(n)
+
+			// Emit progress event every 128KB or at EOF
+			if downloaded%(128*1024) < int64(n) || err == io.EOF {
+				progress := 0
+				if totalSize > 0 {
+					progress = int((float64(downloaded) / float64(totalSize)) * 100)
+					if progress > 100 {
+						progress = 100
+					}
+				}
+				a.emitEvent("model:download:progress", map[string]interface{}{
+					"model":      modelName,
+					"status":     "downloading",
+					"progress":   progress,
+					"downloaded": downloaded,
+					"total":      totalSize,
+				})
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"os"
+	"strings"
 
 	"github.com/MrCodeEU/LinuxHello/internal/cli"
 	"github.com/MrCodeEU/LinuxHello/internal/daemon"
@@ -12,6 +13,10 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
 
+// version is set at build time via -ldflags "-X main.version=..."
+// Falls back to "dev" if not set (e.g. during `go run .`)
+var version = "dev"
+
 const (
 	configHelpText = "    -config <path>        Path to configuration file"
 )
@@ -20,6 +25,16 @@ const (
 var assets embed.FS
 
 func main() {
+	// Check if we're running under Wails build/dev (binding generation)
+	// Skip root check for Wails internal commands
+	for _, arg := range os.Args {
+		if strings.Contains(arg, "assetdir") || strings.Contains(arg, "bindings") ||
+			strings.Contains(arg, "wailsjsdir") {
+			runWailsApp()
+			return
+		}
+	}
+
 	// Check for subcommands
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -128,20 +143,5 @@ func printHelp() {
 }
 
 func printVersion() {
-	println("LinuxHello - Linux Face Authentication System")
-	println("========================================")
-	println("Version: 1.3.4")
-	println("License: MIT")
-	println("")
-	println("Features:")
-	println("  - SCRFD face detection")
-	println("  - ArcFace recognition")
-	println("  - Depth-based liveness detection")
-	println("  - Challenge-response authentication")
-	println("  - PAM integration")
-	println("")
-	println("Hardware Support:")
-	println("  - V4L2 cameras (RGB)")
-	println("  - IR cameras")
-	println("  - Intel RealSense depth cameras")
+	println("LinuxHello " + version)
 }

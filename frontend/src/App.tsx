@@ -12,15 +12,37 @@ import { SettingsTab } from './components/SettingsTab'
 import { PAMTab } from './components/PAMTab'
 import { LogsTab } from './components/LogsTab'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import ModelDownloadModal from './components/ModelDownloadModal'
+import { checkModels } from './wails'
 
 function App() {
   const [activeTab, setActiveTab] = useState('enroll')
+  const [showModelModal, setShowModelModal] = useState(false)
+  const [modelCheckDone, setModelCheckDone] = useState(false)
   
   const { users, config, setConfig, pamStatus, pamServices, serviceInfo, fetchData, fetchUsers, fetchConfig, fetchServiceStatus } = useAppData()
   const { enrollName, setEnrollName, enrollStatus, isEnrolling, enrollmentProgress, handleEnroll } = useEnrollment(fetchUsers)
   const { authTestResult, isAuthTesting, handleAuthTest } = useAuthTesting()
   const { commandOutput, isProcessing, handlePAMAction, handlePAMToggle, handleServiceAction } = useServiceActions(fetchData, fetchServiceStatus)
   const { saveStatus, handleSaveConfig, handleDeleteUser } = useConfiguration(fetchConfig)
+
+  // Check for models on first load
+  useEffect(() => {
+    const checkForModels = async () => {
+      try {
+        const modelStatus = await checkModels()
+        if (!modelStatus.allModelsPresent) {
+          setShowModelModal(true)
+        }
+      } catch (err) {
+        console.error('Failed to check models:', err)
+      } finally {
+        setModelCheckDone(true)
+      }
+    }
+    
+    checkForModels()
+  }, [])
 
   const getServiceStatusClass = (status: string) => {
     const baseClasses = 'px-3 py-1 rounded-full text-sm'
@@ -242,6 +264,14 @@ function App() {
       <div className="flex-1 p-8 overflow-y-auto w-full">
         {renderTabContent()}
       </div>
+
+      {/* Model Download Modal */}
+      {showModelModal && (
+        <ModelDownloadModal
+          onClose={() => setShowModelModal(false)}
+          onComplete={() => setShowModelModal(false)}
+        />
+      )}
     </div>
   )
 }

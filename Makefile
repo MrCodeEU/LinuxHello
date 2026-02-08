@@ -17,7 +17,12 @@ SYSTEM_PAMDIR?=$(shell if [ -d /lib64/security ]; then echo /lib64/security; eli
 
 # Go
 GOBUILD=go build
-LDFLAGS=-ldflags "-s -w"
+# Version: from VERSION= arg, or spec file (source of truth), with git commit suffix for dev builds
+SPEC_VERSION=$(shell grep '^Version:' packaging/linuxhello.spec | sed 's/Version:[[:space:]]*//')
+GIT_EXACT_TAG=$(shell git describe --tags --exact-match 2>/dev/null | sed 's/^v//')
+GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null)
+VERSION ?= $(if $(GIT_EXACT_TAG),$(GIT_EXACT_TAG),$(SPEC_VERSION)$(if $(GIT_COMMIT),-dev+$(GIT_COMMIT),))
+LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 
 # Default target
 .DEFAULT_GOAL := help
@@ -108,7 +113,12 @@ build-pam: ## Build PAM module
 
 gui: build-app ## Build and launch the desktop GUI (requires sudo)
 	@$(MAKE) stop-service
+	@echo ""
+	@echo "Starting inference service..."
 	@$(MAKE) start-service-bg
+	@echo ""
+	@echo "Launching GUI..."
+	@sleep 1
 	@sudo ./bin/$(BINARY_NAME)
 
 start-service-bg: ## Start inference service (background)
@@ -210,18 +220,40 @@ install: build ## Install system-wide
 	install -d $(DESTDIR)$(PAMDIR)
 	install -d $(DESTDIR)$(SYSTEM_PAMDIR)
 	install -d $(DESTDIR)$(SYSCONFDIR)/linuxhello
-	install -d $(DESTDIR)/opt/linuxhello/python-service
-	install -d $(DESTDIR)/opt/linuxhello/models
-	install -d /var/lib/linuxhello
+	install -d $(DESTDIR)/usr/share/linuxhello/python-service
+	install -d $(DESTDIR)/usr/share/linuxhello/models
+	install -d $(DESTDIR)/usr/share/linuxhello/icons
+	install -d $(DESTDIR)/usr/share/applications
+	install -d $(DESTDIR)/usr/share/icons/hicolor/16x16/apps
+	install -d $(DESTDIR)/usr/share/icons/hicolor/24x24/apps
+	install -d $(DESTDIR)/usr/share/icons/hicolor/32x32/apps
+	install -d $(DESTDIR)/usr/share/icons/hicolor/48x48/apps
+	install -d $(DESTDIR)/usr/share/icons/hicolor/64x64/apps
+	install -d $(DESTDIR)/usr/share/icons/hicolor/128x128/apps
+	install -d $(DESTDIR)/usr/share/icons/hicolor/256x256/apps
+	install -d $(DESTDIR)/usr/share/icons/hicolor/512x512/apps
+	install -d $(DESTDIR)/usr/share/icons/hicolor/scalable/apps
+	install -d $(DESTDIR)/etc/systemd/system
+	install -d $(DESTDIR)/var/lib/linuxhello
 	install -m 755 bin/$(BINARY_NAME) $(DESTDIR)$(BINDIR)/
 	install -m 755 bin/$(PAM_MODULE) $(DESTDIR)$(PAMDIR)/
 	@ln -sf $(DESTDIR)$(PAMDIR)/$(PAM_MODULE) $(DESTDIR)$(SYSTEM_PAMDIR)/$(PAM_MODULE) 2>/dev/null || \
 		cp bin/$(PAM_MODULE) $(DESTDIR)$(SYSTEM_PAMDIR)/$(PAM_MODULE)
 	install -m 644 configs/linuxhello.conf $(DESTDIR)$(SYSCONFDIR)/linuxhello/
-	cp -r python-service/*.py python-service/requirements.txt $(DESTDIR)/opt/linuxhello/python-service/
-	cp systemd/linuxhello-inference.service /etc/systemd/system/
-	@if [ -f models/det_10g.onnx ]; then cp models/*.onnx $(DESTDIR)/opt/linuxhello/models/; fi
+	cp -r python-service/*.py python-service/requirements.txt $(DESTDIR)/usr/share/linuxhello/python-service/
+	install -m 644 systemd/linuxhello-inference.service $(DESTDIR)/etc/systemd/system/
+	@if [ -f models/det_10g.onnx ]; then cp models/*.onnx $(DESTDIR)/usr/share/linuxhello/models/; fi
 	install -m 755 scripts/linuxhello-pam $(DESTDIR)$(BINDIR)/
+	install -m 644 packaging/linuxhello.desktop $(DESTDIR)/usr/share/applications/
+	install -m 644 assets/linuxhello-icon.svg $(DESTDIR)/usr/share/icons/hicolor/scalable/apps/linuxhello.svg
+	@for size in 16 24 32 48 64 128 256 512; do \
+		if [ -f assets/linuxhello-icon-$${size}.png ]; then \
+			install -m 644 assets/linuxhello-icon-$${size}.png $(DESTDIR)/usr/share/icons/hicolor/$${size}x$${size}/apps/linuxhello.png; \
+		fi; \
+	done
+	install -m 644 assets/linuxhello-icon-*.png $(DESTDIR)/usr/share/linuxhello/icons/ 2>/dev/null || true
+	install -m 644 assets/linuxhello-icon.svg $(DESTDIR)/usr/share/linuxhello/icons/ 2>/dev/null || true
+	@gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
 	@systemctl daemon-reload 2>/dev/null || true
 	@echo ""
 	@echo "Installed! Next steps:"
@@ -236,9 +268,15 @@ uninstall: ## Uninstall LinuxHello
 	rm -f $(DESTDIR)$(PAMDIR)/$(PAM_MODULE)
 	rm -f $(DESTDIR)$(SYSTEM_PAMDIR)/$(PAM_MODULE)
 	rm -f /etc/systemd/system/linuxhello-inference.service
+	rm -f $(DESTDIR)/usr/share/applications/linuxhello.desktop
+	rm -f $(DESTDIR)/usr/share/icons/hicolor/scalable/apps/linuxhello.svg
+	@for size in 16 24 32 48 64 128 256 512; do \
+		rm -f $(DESTDIR)/usr/share/icons/hicolor/$${size}x$${size}/apps/linuxhello.png; \
+	done
+	@gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
 	@systemctl daemon-reload 2>/dev/null || true
 	@echo "Note: Config and data not removed. To fully clean:"
-	@echo "  sudo rm -rf $(SYSCONFDIR)/linuxhello /opt/linuxhello /var/lib/linuxhello"
+	@echo "  sudo rm -rf $(SYSCONFDIR)/linuxhello /usr/share/linuxhello /var/lib/linuxhello"
 
 # =============================================================================
 # PAM Integration
@@ -268,21 +306,41 @@ pam-restore: ## Restore all PAM configs from backup
 # Packaging
 # =============================================================================
 
+version: ## Show current version
+	@echo "$(VERSION)"
+
 set-version: ## Set version across all files (usage: make set-version VERSION=1.2.3)
-	@if [ "$(VERSION)" = "" ]; then \
-		echo "VERSION is required. Usage: make set-version VERSION=1.2.3"; \
+	@if [ "$(VERSION)" = "" ] || echo "$(VERSION)" | grep -q -- '--'; then \
+		echo "Usage: make set-version VERSION=1.2.3"; \
 		exit 1; \
 	fi
 	@echo "Setting version to $(VERSION)..."
 	@sed -i "s/Version:[[:space:]]*.*/Version:        $(VERSION)/" packaging/linuxhello.spec
-	@sed -i "s/Version:[[:space:]]*.*/Version:        $(VERSION)/" linuxhello.spec
 	@sed -i 's/"version":[[:space:]]*"[^"]*"/"version": "$(VERSION)"/g' frontend/package.json
-	@sed -i 's/"version":[[:space:]]*"[^"]*"/"version": "$(VERSION)"/g' wails.json
-	@git tag -f v$(VERSION) || echo "Git tag creation failed"
-	@echo "Version $(VERSION) set in spec files, package.json, wails.json, and git tag"
+	@sed -i 's/"productVersion":[[:space:]]*"[^"]*"/"productVersion": "$(VERSION)"/g' wails.json
+	@echo "Version $(VERSION) set in spec, package.json, wails.json"
+	@echo "To tag: git tag v$(VERSION)"
 
-get-version: ## Show current version
-	@grep '^Version:' packaging/linuxhello.spec | sed 's/Version:[[:space:]]*//'
+bump-patch: ## Bump patch version (1.2.3 -> 1.2.4) and update all files
+	@CURRENT=$$(grep '^Version:' packaging/linuxhello.spec | sed 's/Version:[[:space:]]*//'); \
+	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
+	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
+	PATCH=$$(echo $$CURRENT | cut -d. -f3); \
+	NEW="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
+	$(MAKE) set-version VERSION=$$NEW
+
+bump-minor: ## Bump minor version (1.2.3 -> 1.3.0) and update all files
+	@CURRENT=$$(grep '^Version:' packaging/linuxhello.spec | sed 's/Version:[[:space:]]*//'); \
+	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
+	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
+	NEW="$$MAJOR.$$((MINOR + 1)).0"; \
+	$(MAKE) set-version VERSION=$$NEW
+
+bump-major: ## Bump major version (1.2.3 -> 2.0.0) and update all files
+	@CURRENT=$$(grep '^Version:' packaging/linuxhello.spec | sed 's/Version:[[:space:]]*//'); \
+	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
+	NEW="$$((MAJOR + 1)).0.0"; \
+	$(MAKE) set-version VERSION=$$NEW
 
 package: build ## Build distribution packages (RPM, DEB, tarball)
 	@VERSION=$${VERSION:-$$(git describe --tags --always 2>/dev/null || echo "dev")}; \

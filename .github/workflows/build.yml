@@ -2,22 +2,23 @@ name: Build and Test
 
 on:
   push:
-    branches: [main, develop]
-    tags: ["v*"]
+    branches: [ main, develop ]
   pull_request:
-    branches: [main]
+    branches: [ main, develop ]
   workflow_dispatch:
 
 env:
-  ONNXRUNTIME_VERSION: "1.23.2"
-  GO_VERSION_STABLE: "1.25"
-  GO_VERSION_PREVIOUS: "1.24"
+  GO_VERSION: '1.25'
+  NODE_VERSION: '20'
+  GOLANGCI_LINT_VERSION: 'v2.1.2'
+  ONNXRUNTIME_VERSION: '1.23.2'
 
 jobs:
-  # Lint job runs first to fail fast on code quality issues
+  # Lint with latest stable Go version
   lint:
     name: Lint
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -25,202 +26,35 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION_STABLE }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libv4l-dev \
-            libpam0g-dev \
-            libsqlite3-dev \
-            libwebkit2gtk-4.0-dev \
-            pkg-config
-
-      - name: Build frontend assets
-        run: cd frontend && npm ci && npm run build
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
-          args: --timeout=5m
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: --timeout=10m
 
-      - name: Check formatting
-        run: |
-          if [ -n "$(gofmt -l .)" ]; then
-            echo "Go code is not formatted:"
-            gofmt -d .
-            exit 1
-          fi
-
-      - name: Run go vet
-        run: go vet ./...
-
-  # Debian build
-  build-debian:
-    name: Build (Debian)
+  # Build and test
+  build:
+    name: Build & Test
     needs: lint
     runs-on: ubuntu-latest
-    container:
-      image: debian:latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-
-      - name: Install dependencies
-        run: |
-          apt-get update
-          apt-get install -y \
-            golang \
-            gcc \
-            g++ \
-            make \
-            libv4l-dev \
-            libpam0g-dev \
-            libsqlite3-dev \
-            libwebkit2gtk-4.0-dev \
-            nodejs \
-            npm \
-            pkg-config \
-            wget \
-            ca-certificates
-
-      - name: Download ONNX Runtime
-        run: |
-          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
-          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
-          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
-          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
-          ldconfig
-
-      - name: Build frontend
-        run: cd frontend && npm ci && npm run build
-
-      - name: Build
-        run: go build -v -tags desktop,production .
-
-      - name: Run tests
-        run: go test -v ./...
-
-  # Fedora build for RPM-based distros
-  build-fedora:
-    name: Build (Fedora)
-    needs: lint
-    runs-on: ubuntu-latest
-    container:
-      image: fedora:latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Install dependencies
-        run: |
-          dnf install -y \
-            golang \
-            gcc \
-            gcc-c++ \
-            make \
-            libv4l-devel \
-            pam-devel \
-            sqlite-devel \
-            webkit2gtk4.0-devel \
-            nodejs \
-            npm \
-            pkg-config \
-            wget \
-            tar
-
-      - name: Download ONNX Runtime
-        run: |
-          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
-          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
-          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
-          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
-          ldconfig
-
-      - name: Build frontend
-        run: cd frontend && npm ci && npm run build
-
-      - name: Build
-        run: go build -v -tags desktop,production .
-
-  # Arch Linux build
-  build-arch:
-    name: Build (Arch Linux)
-    needs: lint
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Install dependencies
-        run: |
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm \
-            go \
-            gcc \
-            make \
-            v4l-utils \
-            pam \
-            sqlite \
-            webkit2gtk \
-            nodejs \
-            npm \
-            pkg-config \
-            wget \
-            tar
-
-      - name: Download ONNX Runtime
-        run: |
-          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
-          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
-          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
-          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
-
-      - name: Build frontend
-        run: cd frontend && npm ci && npm run build
-
-      - name: Build
-        run: go build -v -tags desktop,production .
-
-  # Release job with proper packaging
-  release:
-    name: Build and Release Packages
-    needs: [build-debian, build-fedora, build-arch]
-    runs-on: ubuntu-latest
-    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/'))
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0  # Full history for proper version detection
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION_STABLE }}
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -228,14 +62,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            build-essential \
             libv4l-dev \
             libpam0g-dev \
             libsqlite3-dev \
-            rpm \
-            dpkg-dev \
+            libwebkit2gtk-4.0-dev \
+            libgtk-3-dev \
             pkg-config
 
-      - name: Download ONNX Runtime
+      - name: Download and install ONNX Runtime
         run: |
           wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
           tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
@@ -243,136 +78,28 @@ jobs:
           sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
           sudo ldconfig
 
-      - name: Build web frontend
-        run: |
-          cd frontend
-          npm ci --omit=dev
-          npm run build
-          cd ..
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
 
-      - name: Build Go binaries
+      - name: Build linuxhello
         run: |
           mkdir -p bin
-
-          # Build single binary (Wails app with all subcommands)
-          export CGO_ENABLED=1
           go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
 
-          # Build PAM module
+      - name: Build PAM module
+        run: |
           CGO_CFLAGS="-I/usr/include" \
           CGO_LDFLAGS="-lpam -lpam_misc" \
           go build -buildmode=c-shared -ldflags="-s -w" -o bin/pam_linuxhello.so ./pkg/pam
 
-      - name: Build distribution packages
-        run: |
-          # Get version from tag
-          VERSION=${GITHUB_REF_NAME#v}
-          echo "Building packages for version: $VERSION"
-          
-          # Run packaging script
-          ./packaging/build-packages.sh "$VERSION"
+      - name: Run tests
+        run: go test -v ./...
 
-      - name: Create model download helper
-        run: |
-          mkdir -p dist/helpers
-          cat > dist/helpers/download-models.sh << 'EOF'
-          #!/bin/bash
-          # LinuxHello Model Download Helper
-          
-          MODEL_DIR="/usr/share/linuxhello/models"
-          TEMP_DIR="/tmp/linuxhello-models"
-          
-          echo "LinuxHello Model Download Helper"
-          echo "==============================="
-          echo ""
-          
-          # Check if running as root
-          if [ "$(id -u)" != "0" ]; then
-             echo "This script should be run as root to install models system-wide"
-             echo "Run: sudo $0"
-             exit 1
-          fi
-          
-          mkdir -p "$MODEL_DIR" "$TEMP_DIR"
-          cd "$TEMP_DIR"
-          
-          echo "Downloading ONNX models..."
-          
-          # Download face detection model
-          if [ ! -f "$MODEL_DIR/scrfd_person_2.5g.onnx" ]; then
-              echo "Downloading face detection model (scrfd_person_2.5g.onnx)..."
-              wget -q --show-progress "https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_person_2.5g.onnx"
-              mv scrfd_person_2.5g.onnx "$MODEL_DIR/"
-          fi
-          
-          # Download face recognition model
-          if [ ! -f "$MODEL_DIR/arcface_r50.onnx" ]; then
-              echo "Downloading face recognition model (arcface_r50.onnx)..."
-              wget -q --show-progress "https://github.com/deepinsight/insightface/releases/download/v0.7/arcface_r50.onnx"
-              mv arcface_r50.onnx "$MODEL_DIR/"
-          fi
-          
-          echo "Models installed successfully!"
-          echo "You can now start LinuxHello services."
-          EOF
-          chmod +x dist/helpers/download-models.sh
-
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            dist/packages/*
-            dist/helpers/download-models.sh
-          generate_release_notes: true
-          body: |
-            ## LinuxHello Release ${{ github.ref_name }}
-            
-            ### Installation
-            
-            **For Fedora/RHEL/CentOS:**
-            ```bash
-            # Download and install RPM
-            wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/linuxhello-*-1.*.rpm
-            sudo dnf install linuxhello-*.rpm
-            
-            # Download models
-            sudo wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/download-models.sh
-            sudo chmod +x download-models.sh && sudo ./download-models.sh
-            
-            # Start inference service
-            sudo systemctl enable --now linuxhello-inference
-
-            # Launch the desktop GUI
-            sudo linuxhello
-            ```
-
-            **For Debian/Ubuntu:**
-            ```bash
-            # Download and install DEB
-            wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/linuxhello_*_amd64.deb
-            sudo apt install ./linuxhello_*.deb
-
-            # Download models and start (same as above)
-            ```
-
-            **Generic Installation:**
-            ```bash
-            # Download tarball
-            wget https://github.com/MrCodeEU/LinuxHello/releases/download/${{ github.ref_name }}/linuxhello-*-linux-*.tar.gz
-            tar -xzf linuxhello-*.tar.gz
-            cd linuxhello-generic
-            sudo ./install.sh
-            ```
-
-            ### Usage
-            1. Launch the desktop GUI: `sudo linuxhello`
-            2. Go to "Enroll Face" tab and enroll your face
-            3. Go to "System & PAM" tab and enable PAM for sudo
-            4. Test with `sudo ls` - it should authenticate using your face!
-            
-            ### Features in this release
-            - 🎯 Authentication test page with visual debugging
-            - 📦 Proper RPM/DEB packaging for easy installation
-            - 🔧 Improved PAM integration for Fedora/RHEL
-            - 🖥️ Web-based management GUI
-            - 🔐 Comprehensive face authentication system
+          name: linuxhello-linux-amd64
+          path: |
+            bin/linuxhello
+            bin/pam_linuxhello.so
+          retention-days: 7

@@ -38,6 +38,7 @@ debug_*/
 
 # Logs
 logs/*.log
+logs/*.pid
 *.log
 
 # Data (user enrollments - sensitive)
@@ -45,12 +46,14 @@ data/dev/
 data/*.db
 *.db
 
-# Models (too large for git, download separately)
-models/*.onnx
-!models/README.md
 
 # Config (local overrides)
 configs/dev/
+
+# ONNX Models (large files, download separately)
+models/*.onnx
+models/*.zip
+models/*.tar.gz
 
 # System files
 .DS_Store

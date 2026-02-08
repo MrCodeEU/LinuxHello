@@ -1,124 +1,508 @@
-name: Build and Release
+name: Release
 
 on:
   push:
     tags:
       - 'v*'
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
+env:
+  GO_VERSION: '1.25'
+  NODE_VERSION: '20'
+  ONNXRUNTIME_VERSION: '1.23.2'
+
 jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+
+    steps:
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: LinuxHello ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          body: |
+            ## LinuxHello ${{ github.ref_name }}
+
+            ### Installation
+
+            **For Fedora/RHEL/CentOS:**
+            ```bash
+            # Download and install RPM
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/linuxhello-${{ steps.get_version.outputs.version }}-1.x86_64.rpm
+            sudo dnf install linuxhello-*.rpm
+
+            # Start inference service
+            sudo systemctl enable --now linuxhello-inference
+
+            # Launch the GUI and download models when prompted
+            linuxhello
+            ```
+
+            **For Debian/Ubuntu:**
+            ```bash
+            # Download and install DEB
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/linuxhello_${{ steps.get_version.outputs.version }}_amd64.deb
+            sudo apt install ./linuxhello_*.deb
+
+            # Start inference service and launch GUI
+            sudo systemctl enable --now linuxhello-inference
+            linuxhello
+            ```
+
+            **For Arch Linux:**
+            ```bash
+            # Download and install package
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/linuxhello-${{ steps.get_version.outputs.version }}-1-x86_64.pkg.tar.zst
+            sudo pacman -U linuxhello-*.pkg.tar.zst
+
+            # Start inference service and launch GUI
+            sudo systemctl enable --now linuxhello-inference
+            linuxhello
+            ```
+
+            **First-Time Setup:**
+            - When you first launch LinuxHello, a modal will appear to download required AI models (~200MB)
+            - Click "Download Models" to automatically download from HuggingFace
+            - Models are downloaded once and stored in `/usr/share/linuxhello/models/`
+
+            ### Quick Start
+            1. Install the package for your distro (see above)
+            2. Start the inference service: `sudo systemctl enable --now linuxhello-inference`
+            3. Launch the GUI: `linuxhello` (first launch will prompt to download models)
+            4. Download AI models when prompted (~200MB, one-time download)
+            5. Go to "Enroll Face" tab and enroll your face
+            6. Go to "System & PAM" tab and enable PAM for sudo
+            7. Test with `sudo ls` - it should authenticate using your face!
+
+            ### Features
+            - Face authentication for PAM (sudo, login, etc.)
+            - Native desktop GUI built with Wails
+            - Easy PAM integration management
+            - Modern React-based interface
+            - Secure face recognition with liveness detection
+            - One-click model download on first launch
+
   build-rpm:
+    name: Build RPM (Fedora)
+    needs: create-release
     runs-on: ubuntu-latest
     container:
       image: fedora:latest
-    
+
     steps:
-    - name: Install dependencies
-      run: |
-        dnf update -y
-        dnf install -y golang nodejs npm git rpm-build rpmdevtools
-        dnf install -y libv4l-devel pam-devel sqlite-devel systemd-rpm-macros
-        
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Set up RPM build environment
-      run: |
-        rpmdev-setuptree
-        
-    - name: Get version from tag or commit
-      id: version
-      run: |
-        if [[ $GITHUB_REF == refs/tags/* ]]; then
-          VERSION=${GITHUB_REF#refs/tags/v}
-        else
-          VERSION="0.0.0-$(git rev-parse --short HEAD)"
-        fi
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        
-    - name: Create source tarball
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        mkdir -p linuxhello-$VERSION
-        
-        # Copy source files (exclude .git, node_modules, etc)
-        rsync -av --exclude='.git' --exclude='node_modules' --exclude='dist' \
-              --exclude='bin' --exclude='*.tar.gz' ./ linuxhello-$VERSION/
-        
-        # Create tarball
-        tar -czf ~/rpmbuild/SOURCES/linuxhello-$VERSION.tar.gz linuxhello-$VERSION/
-        
-        # Update spec file with version
-        sed -i "s/Version:.*/Version:        $VERSION/" packaging/linuxhello.spec
-        cp packaging/linuxhello.spec ~/rpmbuild/SPECS/
-        
-    - name: Build RPM
-      run: |
-        rpmbuild -ba ~/rpmbuild/SPECS/linuxhello.spec
-        
-    - name: List built packages
-      run: |
-        find ~/rpmbuild -name "*.rpm" -type f
-        
-    - name: Upload RPM artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: rpm-packages
-        path: |
-          ~/rpmbuild/RPMS/**/*.rpm
-          ~/rpmbuild/SRPMS/*.rpm
-          
-  create-release:
-    needs: build-rpm
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y \
+            golang \
+            gcc \
+            gcc-c++ \
+            make \
+            rpm-build \
+            libv4l-devel \
+            pam-devel \
+            sqlite-devel \
+            webkit2gtk4.0-devel \
+            gtk3-devel \
+            nodejs \
+            npm \
+            pkg-config \
+            wget \
+            tar
+
+      - name: Download and install ONNX Runtime
+        run: |
+          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
+          ldconfig
+
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
+      - name: Build linuxhello
+        run: |
+          mkdir -p bin
+          go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+
+      - name: Build PAM module
+        run: |
+          CGO_CFLAGS="-I/usr/include" \
+          CGO_LDFLAGS="-lpam -lpam_misc" \
+          go build -buildmode=c-shared -ldflags="-s -w" -o bin/pam_linuxhello.so ./pkg/pam
+
+      - name: Build RPM package
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          # Create RPM build structure
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          # Copy spec file
+          cp packaging/linuxhello.spec ~/rpmbuild/SPECS/
+
+          # Create source tarball with all needed files
+          mkdir -p linuxhello-${VERSION}
+          cp -r bin scripts configs systemd packaging assets python-service linuxhello-${VERSION}/
+          tar czf ~/rpmbuild/SOURCES/linuxhello-${VERSION}.tar.gz linuxhello-${VERSION}
+
+          # Build RPM
+          rpmbuild -ba ~/rpmbuild/SPECS/linuxhello.spec \
+            --define "version ${VERSION}" \
+            --define "_topdir $HOME/rpmbuild"
+
+          # Copy RPM to workspace
+          cp ~/rpmbuild/RPMS/x86_64/linuxhello-${VERSION}-1.x86_64.rpm ./
+
+      - name: Upload RPM to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./linuxhello-${{ needs.create-release.outputs.version }}-1.x86_64.rpm
+          asset_name: linuxhello-${{ needs.create-release.outputs.version }}-1.x86_64.rpm
+          asset_content_type: application/x-rpm
+
+  build-deb:
+    name: Build DEB (Debian/Ubuntu)
+    needs: create-release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    
+
     steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: rpm-packages
-        path: packages/
-        
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: packages/**/*.rpm
-        body: |
-          ## LinuxHello Release ${{ github.ref_name }}
-          
-          ### Installation
-          
-          **Fedora/RHEL/Rocky Linux:**
-          ```bash
-          # Download the RPM package
-          wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/linuxhello-*.rpm
-          
-          # Install with dependencies
-          sudo dnf install ./linuxhello-*.rpm
-          
-          # Start inference service
-          sudo systemctl enable --now linuxhello-inference
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-          # Launch the desktop GUI
-          sudo linuxhello
-          ```
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
 
-          ### Quick Start
-          1. Launch the desktop GUI: `sudo linuxhello`
-          2. Enroll your face in the "Enroll Face" tab
-          3. Enable PAM authentication in the "System & PAM" tab
-          4. Test with `sudo ls` - your face should be recognized!
-          
-          ### What's Included
-          - Face authentication system with PAM integration
-          - Web-based management interface
-          - Support for sudo, login, and other PAM services
-          - AI-powered face detection and recognition
-          - Liveness detection to prevent spoofing
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libv4l-dev \
+            libpam0g-dev \
+            libsqlite3-dev \
+            libwebkit2gtk-4.0-dev \
+            libgtk-3-dev \
+            pkg-config \
+            dpkg-dev
+
+      - name: Download and install ONNX Runtime
+        run: |
+          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
+          sudo cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
+          sudo ldconfig
+
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
+      - name: Build linuxhello
+        run: |
+          mkdir -p bin
+          go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+
+      - name: Build PAM module
+        run: |
+          CGO_CFLAGS="-I/usr/include" \
+          CGO_LDFLAGS="-lpam -lpam_misc" \
+          go build -buildmode=c-shared -ldflags="-s -w" -o bin/pam_linuxhello.so ./pkg/pam
+
+      - name: Build DEB package
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          # Create Debian package structure
+          mkdir -p debian-pkg/DEBIAN
+          mkdir -p debian-pkg/usr/bin
+          mkdir -p debian-pkg/usr/lib/security
+          mkdir -p debian-pkg/usr/share/linuxhello/icons
+          mkdir -p debian-pkg/usr/share/linuxhello/python-service
+          mkdir -p debian-pkg/usr/share/linuxhello/models
+          mkdir -p debian-pkg/etc/linuxhello
+          mkdir -p debian-pkg/lib/systemd/system
+          mkdir -p debian-pkg/usr/share/applications
+          mkdir -p debian-pkg/usr/share/icons/hicolor/scalable/apps
+
+          # Copy binaries
+          cp bin/linuxhello debian-pkg/usr/bin/
+          cp bin/pam_linuxhello.so debian-pkg/usr/lib/security/
+          cp scripts/linuxhello-pam debian-pkg/usr/bin/
+
+          # Copy scripts, configs, services
+          cp configs/linuxhello.conf debian-pkg/etc/linuxhello/
+          cp systemd/*.service debian-pkg/lib/systemd/system/
+          cp packaging/linuxhello.desktop debian-pkg/usr/share/applications/
+
+          # Copy Python service
+          cp python-service/*.py debian-pkg/usr/share/linuxhello/python-service/
+          cp python-service/requirements.txt debian-pkg/usr/share/linuxhello/python-service/
+
+          # Install icons
+          for size in 16 24 32 48 64 128 256 512; do
+            if [ -f assets/linuxhello-icon-${size}.png ]; then
+              mkdir -p debian-pkg/usr/share/icons/hicolor/${size}x${size}/apps
+              cp assets/linuxhello-icon-${size}.png debian-pkg/usr/share/icons/hicolor/${size}x${size}/apps/linuxhello.png
+            fi
+          done
+          cp assets/linuxhello-icon.svg debian-pkg/usr/share/icons/hicolor/scalable/apps/linuxhello.svg
+          cp assets/linuxhello-icon-*.png debian-pkg/usr/share/linuxhello/icons/ 2>/dev/null || true
+          cp assets/linuxhello-icon.svg debian-pkg/usr/share/linuxhello/icons/ 2>/dev/null || true
+
+          # Create control file
+          cat > debian-pkg/DEBIAN/control << EOF
+          Package: linuxhello
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libwebkit2gtk-4.0-37, libgtk-3-0, libv4l-0, libpam0g, libsqlite3-0
+          Maintainer: LinuxHello <linuxhello@example.com>
+          Description: Face authentication system for Linux
+           LinuxHello provides face authentication for PAM-enabled services
+           like sudo, login, and desktop managers. Features a modern desktop
+           GUI for easy management and enrollment.
+          EOF
+
+          # Build package
+          dpkg-deb --build debian-pkg linuxhello_${VERSION}_amd64.deb
+
+      - name: Upload DEB to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./linuxhello_${{ needs.create-release.outputs.version }}_amd64.deb
+          asset_name: linuxhello_${{ needs.create-release.outputs.version }}_amd64.deb
+          asset_content_type: application/vnd.debian.binary-package
+
+  build-arch:
+    name: Build Package (Arch Linux)
+    needs: create-release
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm \
+            go \
+            gcc \
+            make \
+            v4l-utils \
+            pam \
+            sqlite \
+            webkit2gtk \
+            gtk3 \
+            nodejs \
+            npm \
+            pkg-config \
+            wget \
+            tar \
+            zstd
+
+      - name: Download and install ONNX Runtime
+        run: |
+          wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          tar -xzf "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/include/"* /usr/local/include/
+          cp -r "onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}/lib/"* /usr/local/lib/
+
+      - name: Build frontend
+        run: cd frontend && npm ci && npm run build
+
+      - name: Build linuxhello
+        run: |
+          mkdir -p bin
+          go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+
+      - name: Build PAM module
+        run: |
+          CGO_CFLAGS="-I/usr/include" \
+          CGO_LDFLAGS="-lpam -lpam_misc" \
+          go build -buildmode=c-shared -ldflags="-s -w" -o bin/pam_linuxhello.so ./pkg/pam
+
+      - name: Build Arch package
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          # Create package directory structure
+          mkdir -p pkg/usr/bin
+          mkdir -p pkg/usr/lib/security
+          mkdir -p pkg/usr/share/linuxhello/icons
+          mkdir -p pkg/usr/share/linuxhello/python-service
+          mkdir -p pkg/usr/share/linuxhello/models
+          mkdir -p pkg/etc/linuxhello
+          mkdir -p pkg/usr/lib/systemd/system
+          mkdir -p pkg/usr/share/applications
+          mkdir -p pkg/usr/share/icons/hicolor/scalable/apps
+
+          # Copy binaries
+          cp bin/linuxhello pkg/usr/bin/
+          cp bin/pam_linuxhello.so pkg/usr/lib/security/
+          cp scripts/linuxhello-pam pkg/usr/bin/
+
+          # Copy configs and services
+          cp configs/linuxhello.conf pkg/etc/linuxhello/
+          cp systemd/*.service pkg/usr/lib/systemd/system/
+          cp packaging/linuxhello.desktop pkg/usr/share/applications/
+
+          # Copy Python service
+          cp python-service/*.py pkg/usr/share/linuxhello/python-service/
+          cp python-service/requirements.txt pkg/usr/share/linuxhello/python-service/
+
+          # Install icons
+          for size in 16 24 32 48 64 128 256 512; do
+            if [ -f assets/linuxhello-icon-${size}.png ]; then
+              mkdir -p pkg/usr/share/icons/hicolor/${size}x${size}/apps
+              cp assets/linuxhello-icon-${size}.png pkg/usr/share/icons/hicolor/${size}x${size}/apps/linuxhello.png
+            fi
+          done
+          cp assets/linuxhello-icon.svg pkg/usr/share/icons/hicolor/scalable/apps/linuxhello.svg
+          cp assets/linuxhello-icon-*.png pkg/usr/share/linuxhello/icons/ 2>/dev/null || true
+          cp assets/linuxhello-icon.svg pkg/usr/share/linuxhello/icons/ 2>/dev/null || true
+
+          # Create .PKGINFO
+          cat > pkg/.PKGINFO << EOF
+          pkgname = linuxhello
+          pkgver = ${VERSION}-1
+          pkgdesc = Face authentication system for Linux
+          url = https://github.com/${{ github.repository }}
+          arch = x86_64
+          license = MIT
+          depend = webkit2gtk
+          depend = gtk3
+          depend = v4l-utils
+          depend = pam
+          depend = sqlite
+          EOF
+
+          # Create package with zstd compression
+          cd pkg
+          tar --zstd -cf ../linuxhello-${VERSION}-1-x86_64.pkg.tar.zst *
+          cd ..
+
+      - name: Upload Arch package to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./linuxhello-${{ needs.create-release.outputs.version }}-1-x86_64.pkg.tar.zst
+          asset_name: linuxhello-${{ needs.create-release.outputs.version }}-1-x86_64.pkg.tar.zst
+          asset_content_type: application/zstd
+
+  upload-model-helper:
+    name: Upload Model Download Helper
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Create model download script
+        run: |
+          cat > download-models.sh << 'EOF'
+          #!/bin/bash
+          # LinuxHello Model Download Helper (Optional - for custom installations)
+          # NOTE: Official packages already include models, this is for manual builds
+
+          MODEL_DIR="/usr/share/linuxhello/models"
+          TEMP_DIR="/tmp/linuxhello-models"
+
+          echo "LinuxHello Model Download Helper"
+          echo "================================="
+          echo ""
+          echo "NOTE: Official DEB/RPM/Arch packages already include models."
+          echo "This script is only needed for custom installations."
+          echo ""
+
+          # Check if running as root
+          if [ "$(id -u)" != "0" ]; then
+             echo "This script should be run as root to install models system-wide"
+             echo "Run: sudo $0"
+             exit 1
+          fi
+
+          # Check if models already exist
+          if [ -f "$MODEL_DIR/det_10g.onnx" ] && [ -f "$MODEL_DIR/arcface_r50.onnx" ]; then
+              echo "Models are already installed in $MODEL_DIR"
+              echo "Nothing to do!"
+              exit 0
+          fi
+
+          mkdir -p "$MODEL_DIR" "$TEMP_DIR"
+          cd "$TEMP_DIR"
+
+          echo "Downloading ONNX models..."
+
+          # Download face detection model
+          if [ ! -f "$MODEL_DIR/det_10g.onnx" ]; then
+              echo "Downloading face detection model (det_10g.onnx)..."
+              wget -q --show-progress "https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/det_10g.onnx"
+              mv det_10g.onnx "$MODEL_DIR/"
+          else
+              echo "Face detection model already exists, skipping..."
+          fi
+
+          # Download face recognition model
+          if [ ! -f "$MODEL_DIR/arcface_r50.onnx" ]; then
+              echo "Downloading face recognition model (arcface_r50.onnx)..."
+              wget -q --show-progress "https://huggingface.co/lithiumice/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx" -O arcface_r50.onnx
+              mv arcface_r50.onnx "$MODEL_DIR/"
+          else
+              echo "Face recognition model already exists, skipping..."
+          fi
+
+          echo ""
+          echo "Models installed successfully to $MODEL_DIR"
+          echo "You can now start LinuxHello services."
+          EOF
+          chmod +x download-models.sh
+
+      - name: Upload model helper to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./download-models.sh
+          asset_name: download-models.sh
+          asset_content_type: application/x-sh

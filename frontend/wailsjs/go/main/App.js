@@ -6,6 +6,10 @@ export function CancelEnrollment() {
   return window['go']['main']['App']['CancelEnrollment']();
 }
 
+export function CheckModels() {
+  return window['go']['main']['App']['CheckModels']();
+}
+
 export function ControlService(arg1) {
   return window['go']['main']['App']['ControlService'](arg1);
 }
@@ -16,6 +20,10 @@ export function DeleteUser(arg1) {
 
 export function DownloadLogs() {
   return window['go']['main']['App']['DownloadLogs']();
+}
+
+export function DownloadModels() {
+  return window['go']['main']['App']['DownloadModels']();
 }
 
 export function GetConfig() {

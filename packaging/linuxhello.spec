@@ -8,8 +8,8 @@ License:        MIT
 URL:            https://github.com/MrCodeEU/LinuxHello
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  golang >= 1.19
-BuildRequires:  nodejs >= 16
+BuildRequires:  golang >= 1.24
+BuildRequires:  nodejs >= 18
 BuildRequires:  npm
 BuildRequires:  libv4l-devel
 BuildRequires:  pam-devel
@@ -64,7 +64,9 @@ install -d %{buildroot}%{_sysconfdir}/linuxhello
 install -d %{buildroot}%{_datadir}/linuxhello
 install -d %{buildroot}%{_datadir}/linuxhello/python-service
 install -d %{buildroot}%{_datadir}/linuxhello/models
+install -d %{buildroot}%{_datadir}/linuxhello/icons
 install -d %{buildroot}%{_datadir}/applications
+install -d %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
 install -d %{buildroot}%{_unitdir}
 install -d %{buildroot}%{_localstatedir}/lib/linuxhello
 install -d %{buildroot}%{_localstatedir}/log
@@ -84,9 +86,19 @@ cp python-service/*.py %{buildroot}%{_datadir}/linuxhello/python-service/
 cp python-service/requirements.txt %{buildroot}%{_datadir}/linuxhello/python-service/
 
 # Install models (if present)
-cp models/README.md %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
 cp models/arcface_r50.onnx %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
 cp models/det_10g.onnx %{buildroot}%{_datadir}/linuxhello/models/ 2>/dev/null || true
+
+# Install icons
+for size in 16 24 32 48 64 128 256 512; do
+    if [ -f assets/linuxhello-icon-${size}.png ]; then
+        install -d %{buildroot}%{_datadir}/icons/hicolor/${size}x${size}/apps
+        install -m 644 assets/linuxhello-icon-${size}.png %{buildroot}%{_datadir}/icons/hicolor/${size}x${size}/apps/linuxhello.png
+    fi
+done
+install -m 644 assets/linuxhello-icon.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/linuxhello.svg
+install -m 644 assets/linuxhello-icon-*.png %{buildroot}%{_datadir}/linuxhello/icons/ 2>/dev/null || true
+install -m 644 assets/linuxhello-icon.svg %{buildroot}%{_datadir}/linuxhello/icons/ 2>/dev/null || true
 
 # Install systemd service (inference only; GUI is a desktop app)
 install -m 644 systemd/linuxhello-inference.service %{buildroot}%{_unitdir}/
@@ -140,6 +152,7 @@ echo ""
 %config(noreplace) %{_sysconfdir}/linuxhello/linuxhello.conf
 %{_datadir}/linuxhello/
 %{_datadir}/applications/linuxhello.desktop
+%{_datadir}/icons/hicolor/*/apps/linuxhello.*
 %{_unitdir}/linuxhello-inference.service
 %dir %{_localstatedir}/lib/linuxhello
 

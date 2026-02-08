@@ -95,6 +95,8 @@ func NewEngine(cfg *config.Config, logger *logrus.Logger) (*Engine, error) {
 		return nil, fmt.Errorf("failed to connect to inference service at %s: %w (is the service running? try: make start-service)", cfg.Inference.Address, err)
 	}
 
+	logger.Infof("Connected to inference service v%s on %s", inferenceClient.Version, inferenceClient.Device)
+
 	engine := &Engine{
 		config:          cfg,
 		logger:          logger,

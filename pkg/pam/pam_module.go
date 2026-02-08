@@ -7,6 +7,8 @@ package main
 #include <security/pam_modules.h>
 #include <string.h>
 #include <stdlib.h>
+
+extern int pam_send_message(pam_handle_t *pamh, const char *message, int msg_style);
 */
 import "C"
 
@@ -48,6 +50,20 @@ func init() {
 	}
 }
 
+// pamInfo sends an informational message to the user via PAM conversation
+func pamInfo(pamh *C.pam_handle_t, msg string) {
+	cMsg := C.CString(msg)
+	defer C.free(unsafe.Pointer(cMsg))
+	C.pam_send_message(pamh, cMsg, C.PAM_TEXT_INFO)
+}
+
+// pamError sends an error message to the user via PAM conversation
+func pamError(pamh *C.pam_handle_t, msg string) {
+	cMsg := C.CString(msg)
+	defer C.free(unsafe.Pointer(cMsg))
+	C.pam_send_message(pamh, cMsg, C.PAM_ERROR_MSG)
+}
+
 //export goAuthenticate
 func goAuthenticate(pamh *C.pam_handle_t, _ C.int, argc C.int, argv **C.char) C.int {
 	// Defensive check for logger
@@ -74,20 +90,24 @@ func goAuthenticate(pamh *C.pam_handle_t, _ C.int, argc C.int, argv **C.char) C.
 		return result
 	}
 
+	pamInfo(pamh, "LinuxHello: Authenticating...")
+
 	// Initialize authentication system
 	engine, result := initializeAuthEngine(cfg)
 	if result != C.PAM_SUCCESS {
+		pamError(pamh, "LinuxHello: Service unavailable")
 		return result
 	}
 	defer func() { _ = engine.Close() }()
 
 	// Initialize and start camera
 	if result := setupCamera(engine, cfg); result != C.PAM_SUCCESS {
+		pamError(pamh, "LinuxHello: Camera unavailable")
 		return result
 	}
 
 	// Perform authentication
-	return performAuthentication(engine, cfg, username)
+	return performAuthentication(pamh, engine, cfg, username)
 }
 
 // parseArgumentsSafely safely parses PAM arguments
@@ -151,7 +171,7 @@ func setupCamera(engine *auth.Engine, cfg *config.Config) C.int {
 }
 
 // performAuthentication executes the authentication process
-func performAuthentication(engine *auth.Engine, cfg *config.Config, username string) C.int {
+func performAuthentication(pamh *C.pam_handle_t, engine *auth.Engine, cfg *config.Config, username string) C.int {
 	ctx, cancel := context.WithTimeout(context.Background(),
 		time.Duration(cfg.Auth.SessionTimeout)*time.Second)
 	defer cancel()
@@ -159,16 +179,19 @@ func performAuthentication(engine *auth.Engine, cfg *config.Config, username str
 	result, err := engine.AuthenticateUser(ctx, username)
 	if err != nil {
 		logger.Errorf("Authentication error: %v", err)
+		pamError(pamh, "LinuxHello: Authentication error")
 		return fallbackOrError(cfg)
 	}
 
 	if result.Success {
 		logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
 			username, result.Confidence, result.ProcessingTime)
+		pamInfo(pamh, fmt.Sprintf("LinuxHello: Authenticated as %s", username))
 		return C.PAM_SUCCESS
 	}
 
 	logger.Warnf("Authentication failed for user %s: %v", username, result.Error)
+	pamError(pamh, "LinuxHello: Authentication failed")
 	return fallbackOrError(cfg)
 }
 

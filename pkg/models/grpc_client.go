@@ -18,8 +18,10 @@ import (
 
 // InferenceClient manages connection to the Python inference service
 type InferenceClient struct {
-	conn   *grpc.ClientConn
-	client inference.FaceInferenceClient
+	conn    *grpc.ClientConn
+	client  inference.FaceInferenceClient
+	Version string
+	Device  string
 }
 
 // NewInferenceClient creates a new inference client
@@ -53,11 +55,11 @@ func NewInferenceClient(address string) (*InferenceClient, error) {
 		return nil, fmt.Errorf("inference service is not healthy")
 	}
 
-	fmt.Printf("Connected to inference service v%s on %s\n", healthResp.Version, healthResp.Device)
-
 	return &InferenceClient{
-		conn:   conn,
-		client: client,
+		conn:    conn,
+		client:  client,
+		Version: healthResp.Version,
+		Device:  healthResp.Device,
 	}, nil
 }
 
