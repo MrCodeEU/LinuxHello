@@ -106,7 +106,7 @@ jobs:
       - name: Build linuxhello
         run: |
           mkdir -p bin
-          go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+          go build -ldflags="-s -w" -tags desktop,production,webkit2_41 -o bin/linuxhello .
 
       - name: Build PAM module
         run: |
