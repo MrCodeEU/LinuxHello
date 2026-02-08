@@ -140,7 +140,7 @@ jobs:
       - name: Build linuxhello
         run: |
           mkdir -p bin
-          go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+          go build -ldflags="-s -w" -tags desktop,production,webkit2_41 -o bin/linuxhello .
 
       - name: Build PAM module
         run: |
@@ -211,7 +211,7 @@ jobs:
             libv4l-dev \
             libpam0g-dev \
             libsqlite3-dev \
-            libwebkit2gtk-4.0-dev \
+            libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             pkg-config \
             dpkg-dev
@@ -230,7 +230,7 @@ jobs:
       - name: Build linuxhello
         run: |
           mkdir -p bin
-          go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+          go build -ldflags="-s -w" -tags desktop,production,webkit2_41 -o bin/linuxhello .
 
       - name: Build PAM module
         run: |
@@ -286,7 +286,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: amd64
-          Depends: libwebkit2gtk-4.0-37, libgtk-3-0, libv4l-0, libpam0g, libsqlite3-0
+          Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libv4l-0, libpam0g, libsqlite3-0
           Maintainer: LinuxHello <linuxhello@example.com>
           Description: Face authentication system for Linux
            LinuxHello provides face authentication for PAM-enabled services
@@ -350,7 +350,7 @@ jobs:
       - name: Build linuxhello
         run: |
           mkdir -p bin
-          go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+          go build -ldflags="-s -w" -tags desktop,production,webkit2_41 -o bin/linuxhello .
 
       - name: Build PAM module
         run: |
