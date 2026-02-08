@@ -121,7 +121,7 @@ jobs:
             libv4l-devel \
             pam-devel \
             sqlite-devel \
-            webkit2gtk4.0-devel \
+            webkit2gtk4.1-devel \
             gtk3-devel \
             nodejs \
             npm \
@@ -331,7 +331,7 @@ jobs:
             v4l-utils \
             pam \
             sqlite \
-            webkit2gtk \
+            webkit2gtk-4.1 \
             gtk3 \
             nodejs \
             npm \
