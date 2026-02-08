@@ -40,21 +40,7 @@ Features:
 %setup -q
 
 %build
-# Build web frontend (embedded into Wails GUI binary)
-cd frontend
-npm ci
-npm run build
-cd ..
-
-# Build Go binaries
-export CGO_ENABLED=1
-go mod download
-
-# Build single binary (Wails app with all subcommands, embeds frontend/dist)
-go build -ldflags="-s -w" -tags desktop,production,webkit2_41 -o bin/linuxhello .
-
-# Build PAM module
-CGO_ENABLED=1 go build -buildmode=c-shared -ldflags="-s -w" -o bin/pam_linuxhello.so ./pkg/pam
+# Binaries are pre-built by CI; nothing to do here
 
 %install
 # Create directories
