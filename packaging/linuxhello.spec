@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           linuxhello
-Version:        1.3.4
+Version:        1.4.0
 Release:        1%{?dist}
 Summary:        Face authentication system for Linux
 License:        MIT
@@ -51,7 +51,7 @@ export CGO_ENABLED=1
 go mod download
 
 # Build single binary (Wails app with all subcommands, embeds frontend/dist)
-go build -ldflags="-s -w" -tags desktop,production -o bin/linuxhello .
+go build -ldflags="-s -w" -tags desktop,production,webkit2_41 -o bin/linuxhello .
 
 # Build PAM module
 CGO_ENABLED=1 go build -buildmode=c-shared -ldflags="-s -w" -o bin/pam_linuxhello.so ./pkg/pam
@@ -157,6 +157,11 @@ echo ""
 %dir %{_localstatedir}/lib/linuxhello
 
 %changelog
+* Sun Feb 08 2026 MrCode <mrcode@example.com> - 1.4.0-1
+- Fix inference service auto-start in GUI (start before engine creation)
+- Add PAM conversation messages for authentication feedback
+- Migrate to Wails v2 with webkit2gtk-4.1 support
+
 * Thu Feb 06 2026 MrCode <mrcode@example.com> - 1.3.4-3
 - Consolidated all binaries into single linuxhello binary with subcommands
 - Removed linuxhello-enroll, linuxhello-test, linuxhello-gui separate binaries
