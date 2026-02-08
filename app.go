@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -211,7 +212,7 @@ func (a *App) isInferenceServiceRunning() bool {
 	if err != nil {
 		return false
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// If NewInferenceClient succeeds, it means the health check passed
 	return true
@@ -255,7 +256,7 @@ func (a *App) startInferenceService() error {
 	// Redirect output to log file
 	logDir := "./logs"
 	if _, err := os.Stat(logDir); os.IsNotExist(err) {
-		os.MkdirAll(logDir, 0755)
+		_ = os.MkdirAll(logDir, 0755)
 	}
 
 	logFile, err := os.OpenFile(filepath.Join(logDir, "inference.log"),
@@ -366,7 +367,7 @@ type ModelInfo struct {
 // GetUsers returns all enrolled users
 func (a *App) GetUsers() ([]UserResponse, error) {
 	if a.engine == nil {
-		return nil, fmt.Errorf(errEngineNotInitialized)
+		return nil, errors.New(errEngineNotInitialized)
 	}
 
 	users, err := a.engine.ListUsers()
@@ -388,7 +389,7 @@ func (a *App) GetUsers() ([]UserResponse, error) {
 // DeleteUser deletes a user's enrollment
 func (a *App) DeleteUser(username string) error {
 	if a.engine == nil {
-		return fmt.Errorf(errEngineNotInitialized)
+		return errors.New(errEngineNotInitialized)
 	}
 	return a.engine.DeleteUser(username)
 }
@@ -588,7 +589,7 @@ func (a *App) processEnrollFrame() bool {
 // RunAuthTest performs an authentication test
 func (a *App) RunAuthTest() (*AuthTestResult, error) {
 	if a.engine == nil {
-		return nil, fmt.Errorf(errEngineNotInitialized)
+		return nil, errors.New(errEngineNotInitialized)
 	}
 
 	a.mu.Lock()
@@ -979,7 +980,7 @@ func (a *App) ensureCameraRunning() error {
 	}
 
 	if a.engine == nil {
-		return fmt.Errorf(errEngineNotInitialized)
+		return errors.New(errEngineNotInitialized)
 	}
 
 	if err := a.engine.Start(); err != nil {
@@ -1478,7 +1479,7 @@ func (a *App) downloadFileWithProgress(url, filepath, modelName string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("bad status: %s", resp.Status)
@@ -1488,7 +1489,7 @@ func (a *App) downloadFileWithProgress(url, filepath, modelName string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	// Get total size
 	totalSize := resp.ContentLength
