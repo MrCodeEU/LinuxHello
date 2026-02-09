@@ -4,7 +4,8 @@
 >
 > This project is in early development and has **NOT been thoroughly tested**. It may contain bugs, security vulnerabilities, or cause system lockouts. **Always keep alternative authentication methods available.**
 >
-> **Tested Platform**: Fedora 41 + KDE Plasma 6 only. Other distributions may work but are untested.
+> **Tested Platform**: Fedora 43 + KDE Plasma 6 only. Other distributions may work but are untested.
+> **Vibe Coding**: This is my firs time doing PAM stuff and building linux apps therefore i used a significant amount of AI to get this to work.
 
 A Windows Hello-style face authentication system for Linux that provides:
 
