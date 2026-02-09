@@ -163,7 +163,7 @@ jobs:
 
           # Create source tarball with all needed files
           mkdir -p linuxhello-${VERSION}
-          cp -r bin scripts configs systemd packaging assets python-service linuxhello-${VERSION}/
+          cp -r bin scripts configs systemd packaging assets python-service LICENSE README.md linuxhello-${VERSION}/
           tar czf ~/rpmbuild/SOURCES/linuxhello-${VERSION}.tar.gz linuxhello-${VERSION}
 
           # Build RPM
