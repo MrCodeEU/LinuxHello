@@ -167,8 +167,9 @@ jobs:
           tar czf ~/rpmbuild/SOURCES/linuxhello-${VERSION}.tar.gz linuxhello-${VERSION}
 
           # Build RPM
-          rpmbuild -ba ~/rpmbuild/SPECS/linuxhello.spec \
+          rpmbuild -bb ~/rpmbuild/SPECS/linuxhello.spec \
             --define "version ${VERSION}" \
+            --define "dist %{nil}" \
             --define "_topdir $HOME/rpmbuild"
 
           # Copy RPM to workspace
