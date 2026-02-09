@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           linuxhello
-Version:        1.4.0
+Version:        1.4.1
 Release:        1%{?dist}
 Summary:        Face authentication system for Linux
 License:        MIT
@@ -53,6 +53,7 @@ install -d %{buildroot}%{_datadir}/linuxhello/models
 install -d %{buildroot}%{_datadir}/linuxhello/icons
 install -d %{buildroot}%{_datadir}/applications
 install -d %{buildroot}%{_datadir}/icons/hicolor/scalable/apps
+install -d %{buildroot}%{_datadir}/polkit-1/actions
 install -d %{buildroot}%{_unitdir}
 install -d %{buildroot}%{_localstatedir}/lib/linuxhello
 install -d %{buildroot}%{_localstatedir}/log
@@ -91,6 +92,9 @@ install -m 644 systemd/linuxhello-inference.service %{buildroot}%{_unitdir}/
 
 # Install desktop launcher
 install -m 644 packaging/linuxhello.desktop %{buildroot}%{_datadir}/applications/
+
+# Install polkit policy (allows pkexec to pass display env vars)
+install -m 644 packaging/com.github.mrcodeeu.linuxhello.policy %{buildroot}%{_datadir}/polkit-1/actions/
 
 %pre
 # Create linuxhello user and group
@@ -140,9 +144,14 @@ echo ""
 %{_datadir}/applications/linuxhello.desktop
 %{_datadir}/icons/hicolor/*/apps/linuxhello.*
 %{_unitdir}/linuxhello-inference.service
+%{_datadir}/polkit-1/actions/com.github.mrcodeeu.linuxhello.policy
 %dir %{_localstatedir}/lib/linuxhello
 
 %changelog
+* Sun Feb 09 2026 MrCode <mrcode@example.com> - 1.4.1-1
+- Add polkit policy for desktop entry to pass display environment variables
+- Fix GUI not launching from desktop entry (pkexec stripped env vars)
+
 * Sun Feb 08 2026 MrCode <mrcode@example.com> - 1.4.0-1
 - Fix inference service auto-start in GUI (start before engine creation)
 - Add PAM conversation messages for authentication feedback

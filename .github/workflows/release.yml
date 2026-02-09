@@ -257,6 +257,7 @@ jobs:
           mkdir -p debian-pkg/lib/systemd/system
           mkdir -p debian-pkg/usr/share/applications
           mkdir -p debian-pkg/usr/share/icons/hicolor/scalable/apps
+          mkdir -p debian-pkg/usr/share/polkit-1/actions
 
           # Copy binaries
           cp bin/linuxhello debian-pkg/usr/bin/
@@ -267,6 +268,7 @@ jobs:
           cp configs/linuxhello.conf debian-pkg/etc/linuxhello/
           cp systemd/*.service debian-pkg/lib/systemd/system/
           cp packaging/linuxhello.desktop debian-pkg/usr/share/applications/
+          cp packaging/com.github.mrcodeeu.linuxhello.policy debian-pkg/usr/share/polkit-1/actions/
 
           # Copy Python service
           cp python-service/*.py debian-pkg/usr/share/linuxhello/python-service/
@@ -290,7 +292,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: amd64
-          Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libv4l-0, libpam0g, libsqlite3-0
+          Depends: libwebkit2gtk-4.1-0, libgtk-3-0, libv4l-0, libpam0g, libsqlite3-0, policykit-1
           Maintainer: LinuxHello <linuxhello@example.com>
           Description: Face authentication system for Linux
            LinuxHello provides face authentication for PAM-enabled services
@@ -376,6 +378,7 @@ jobs:
           mkdir -p pkg/usr/lib/systemd/system
           mkdir -p pkg/usr/share/applications
           mkdir -p pkg/usr/share/icons/hicolor/scalable/apps
+          mkdir -p pkg/usr/share/polkit-1/actions
 
           # Copy binaries
           cp bin/linuxhello pkg/usr/bin/
@@ -386,6 +389,7 @@ jobs:
           cp configs/linuxhello.conf pkg/etc/linuxhello/
           cp systemd/*.service pkg/usr/lib/systemd/system/
           cp packaging/linuxhello.desktop pkg/usr/share/applications/
+          cp packaging/com.github.mrcodeeu.linuxhello.policy pkg/usr/share/polkit-1/actions/
 
           # Copy Python service
           cp python-service/*.py pkg/usr/share/linuxhello/python-service/
@@ -415,6 +419,7 @@ jobs:
           depend = v4l-utils
           depend = pam
           depend = sqlite
+          depend = polkit
           EOF
 
           # Create package with zstd compression
