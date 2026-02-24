@@ -1,0 +1,9 @@
+{
+  "description": "A Windows Hello-style face authentication system for Linux with PAM integration, IR camera support, anti-spoofing protection, and a modern Wails-based web management GUI.",
+  "featured": true,
+  "tags": ["golang", "linux", "face-recognition", "pam", "wails", "security", "ai", "onnx"],
+  "images": [
+    "https://picsum.photos/seed/linuxhello1/800/450",
+    "https://picsum.photos/seed/linuxhello2/800/450"
+  ]
+}
