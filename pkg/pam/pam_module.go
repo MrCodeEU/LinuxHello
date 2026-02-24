@@ -14,10 +14,13 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -170,14 +173,63 @@ func setupCamera(engine *auth.Engine, cfg *config.Config) C.int {
 	return C.PAM_SUCCESS
 }
 
+// setupSignalHandler creates a context that cancels on SIGINT/SIGTERM
+// This allows Ctrl+C to cancel the face detection loop
+func setupSignalHandler(parentCtx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parentCtx)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		select {
+		case sig := <-sigChan:
+			logger.Infof("Received signal %v, cancelling authentication", sig)
+			cancel()
+		case <-ctx.Done():
+		}
+		signal.Stop(sigChan)
+	}()
+
+	return ctx, cancel
+}
+
 // performAuthentication executes the authentication process
+// The authentication will wait for a face to be detected (with optional timeout),
+// and can be cancelled via Ctrl+C (SIGINT) or the context
 func performAuthentication(pamh *C.pam_handle_t, engine *auth.Engine, cfg *config.Config, username string) C.int {
-	ctx, cancel := context.WithTimeout(context.Background(),
-		time.Duration(cfg.Auth.SessionTimeout)*time.Second)
-	defer cancel()
+	// Create base context
+	ctx := context.Background()
+
+	// Setup signal handling for Ctrl+C support
+	ctx, signalCancel := setupSignalHandler(ctx)
+	defer signalCancel()
+
+	// Apply optional timeout for face detection (useful for graphical login managers)
+	// A value of 0 means no timeout (wait indefinitely)
+	if cfg.Auth.FaceDetectionTimeout > 0 {
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, time.Duration(cfg.Auth.FaceDetectionTimeout)*time.Second)
+		defer timeoutCancel()
+		logger.Debugf("Face detection timeout set to %d seconds", cfg.Auth.FaceDetectionTimeout)
+	}
+
+	pamInfo(pamh, "LinuxHello: Waiting for face detection... (Ctrl+C to cancel)")
 
 	result, err := engine.AuthenticateUser(ctx, username)
 	if err != nil {
+		// Check if cancelled by user (Ctrl+C)
+		if ctx.Err() == context.Canceled {
+			logger.Info("Authentication cancelled by user (Ctrl+C)")
+			pamInfo(pamh, "LinuxHello: Authentication cancelled")
+			return C.PAM_AUTH_ERR
+		}
+		// Check if timed out
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Info("Face detection timed out")
+			pamInfo(pamh, "LinuxHello: Face detection timed out")
+			return fallbackOrError(cfg)
+		}
 		logger.Errorf("Authentication error: %v", err)
 		pamError(pamh, "LinuxHello: Authentication error")
 		return fallbackOrError(cfg)
@@ -188,6 +240,18 @@ func performAuthentication(pamh *C.pam_handle_t, engine *auth.Engine, cfg *confi
 			username, result.Confidence, result.ProcessingTime)
 		pamInfo(pamh, fmt.Sprintf("LinuxHello: Authenticated as %s", username))
 		return C.PAM_SUCCESS
+	}
+
+	// Check if the error was due to cancellation or timeout
+	if result.Error != nil && errors.Is(result.Error, auth.ErrAuthenticationCancelled) {
+		if ctx.Err() == context.DeadlineExceeded {
+			logger.Info("Face detection timed out")
+			pamInfo(pamh, "LinuxHello: Face detection timed out")
+			return fallbackOrError(cfg)
+		}
+		logger.Info("Authentication cancelled by user (Ctrl+C)")
+		pamInfo(pamh, "LinuxHello: Authentication cancelled")
+		return C.PAM_AUTH_ERR
 	}
 
 	logger.Warnf("Authentication failed for user %s: %v", username, result.Error)

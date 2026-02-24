@@ -108,12 +108,13 @@ type LockoutConfig struct {
 
 // AuthConfig holds authentication configuration
 type AuthConfig struct {
-	MaxAttempts     int    `mapstructure:"max_attempts" json:"max_attempts" yaml:"max_attempts"`
-	LockoutDuration int    `mapstructure:"lockout_duration" json:"lockout_duration" yaml:"lockout_duration"`
-	SessionTimeout  int    `mapstructure:"session_timeout" json:"session_timeout" yaml:"session_timeout"`
-	FallbackEnabled bool   `mapstructure:"fallback_enabled" json:"fallback_enabled" yaml:"fallback_enabled"`
-	ContinuousAuth  bool   `mapstructure:"continuous_auth" json:"continuous_auth" yaml:"continuous_auth"`
-	SecurityLevel   string `mapstructure:"security_level" json:"security_level" yaml:"security_level"`
+	MaxAttempts          int    `mapstructure:"max_attempts" json:"max_attempts" yaml:"max_attempts"`
+	LockoutDuration      int    `mapstructure:"lockout_duration" json:"lockout_duration" yaml:"lockout_duration"`
+	SessionTimeout       int    `mapstructure:"session_timeout" json:"session_timeout" yaml:"session_timeout"`
+	FallbackEnabled      bool   `mapstructure:"fallback_enabled" json:"fallback_enabled" yaml:"fallback_enabled"`
+	ContinuousAuth       bool   `mapstructure:"continuous_auth" json:"continuous_auth" yaml:"continuous_auth"`
+	SecurityLevel        string `mapstructure:"security_level" json:"security_level" yaml:"security_level"`
+	FaceDetectionTimeout int    `mapstructure:"face_detection_timeout" json:"face_detection_timeout" yaml:"face_detection_timeout"` // Seconds to wait for face detection (0 = wait indefinitely)
 }
 
 // StorageConfig holds data storage configuration
@@ -186,12 +187,13 @@ func DefaultConfig() *Config {
 			ProgressiveLockout: false,
 		},
 		Auth: AuthConfig{
-			MaxAttempts:     3,
-			LockoutDuration: 300,
-			SessionTimeout:  3600,
-			FallbackEnabled: true,
-			ContinuousAuth:  false,
-			SecurityLevel:   "medium",
+			MaxAttempts:          3,
+			LockoutDuration:      300,
+			SessionTimeout:       3600,
+			FallbackEnabled:      true,
+			ContinuousAuth:       false,
+			SecurityLevel:        "medium",
+			FaceDetectionTimeout: 0, // 0 = no timeout (wait indefinitely for face detection)
 		},
 		Storage: StorageConfig{
 			DataDir:       "/var/lib/linuxhello",

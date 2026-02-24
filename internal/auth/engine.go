@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -24,6 +25,9 @@ import (
 )
 
 const errEncodeImage = "failed to encode image: %w"
+
+// ErrAuthenticationCancelled is returned when authentication is cancelled by context
+var ErrAuthenticationCancelled = errors.New("authentication cancelled")
 
 // Result represents an authentication result
 type Result struct {
@@ -216,8 +220,8 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 	startTime := time.Now()
 	result := &Result{Success: false}
 
-	// 1. Capture and Detect
-	img, detection, err := e.captureAndDetect()
+	// 1. Capture and Detect (with context for cancellation support)
+	img, detection, err := e.captureAndDetect(ctx)
 	if err != nil {
 		result.Error = err
 		return result, nil
@@ -315,43 +319,71 @@ func (e *Engine) recordSuccessfulAuth(result *Result) {
 	)
 }
 
-func (e *Engine) captureAndDetect() (image.Image, models.Detection, error) {
+func (e *Engine) captureAndDetect(ctx context.Context) (image.Image, models.Detection, error) {
 	if e.inferenceClient == nil {
 		return nil, models.Detection{}, fmt.Errorf("inference client not connected")
 	}
 
-	var lastImage image.Image
-	maxAttempts := 5 // Reduced from 10 to improve responsiveness
+	const maxAttempts = 100000 // Safety ceiling; should never be reached in practice
+	attempt := 0
+	logInterval := 10 // Log status every 10 attempts
+	consecutiveFailures := 0
+	maxBackoff := 2 * time.Second
+	baseDelay := 100 * time.Millisecond
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		// Small delay between frame captures to ensure fresh frames
-		if attempt > 0 {
-			time.Sleep(50 * time.Millisecond)
+	for attempt < maxAttempts {
+		// Check for context cancellation (supports Ctrl+C and other cancellation)
+		select {
+		case <-ctx.Done():
+			e.logger.Info("Face detection cancelled by context")
+			return nil, models.Detection{}, fmt.Errorf("%w", ErrAuthenticationCancelled)
+		default:
+			// Continue with detection
+		}
+
+		attempt++
+
+		// Apply backoff delay based on consecutive failures
+		// This prevents excessive CPU usage when camera/inference is struggling
+		if attempt > 1 {
+			backoff := time.Duration(math.Min(
+				float64(baseDelay)*math.Pow(1.5, float64(consecutiveFailures)),
+				float64(maxBackoff),
+			))
+			time.Sleep(backoff)
 		}
 
 		// 1. Capture frame
-		img, err := e.captureFrameFromCamera(attempt)
+		img, err := e.captureFrameFromCamera(attempt - 1)
 		if err != nil {
-			// If capture fails, we can't do anything with this attempt
+			// If capture fails, continue to next attempt
+			consecutiveFailures++
+			if attempt%logInterval == 0 {
+				e.logger.Debugf("Still waiting for valid frame... attempt %d", attempt)
+			}
 			continue
 		}
-		lastImage = img
 
 		// 2. Detect faces
-		detection, err := e.detectSingleFace(img, attempt)
+		detection, err := e.detectSingleFace(img, attempt-1)
 		if err != nil {
-			// Detection failed, try next attempt
+			// Detection failed, continue to next attempt
+			consecutiveFailures++
+			// Log periodically for user feedback
+			if attempt%logInterval == 0 {
+				e.logger.Infof("Waiting for face detection... attempt %d", attempt)
+			}
 			continue
 		}
 
-		e.logger.Infof("Successfully captured frame with face detection on attempt %d (confidence: %.3f)",
-			attempt+1, detection.Confidence)
+		e.logger.Infof("Face detected on attempt %d (confidence: %.3f)",
+			attempt, detection.Confidence)
 
 		return img, detection, nil
 	}
 
-	// All attempts failed
-	return lastImage, models.Detection{}, fmt.Errorf("no face detected after %d attempts (ensure face is visible and well-lit)", maxAttempts)
+	// Safety ceiling reached (should never happen in practice)
+	return nil, models.Detection{}, fmt.Errorf("max attempts reached (%d) without face detection", maxAttempts)
 }
 
 // captureFrameFromCamera captures and enhances a frame from the camera
@@ -470,8 +502,8 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		return result, nil
 	}
 
-	// Reuse captureAndDetect helper
-	img, detection, err := e.captureAndDetect()
+	// Reuse captureAndDetect helper (with context for cancellation support)
+	img, detection, err := e.captureAndDetect(ctx)
 	if err != nil {
 		result.Error = err
 		return result, nil
@@ -556,8 +588,8 @@ func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo
 	result := &Result{Success: false}
 	debugInfo := &DebugInfo{}
 
-	// Capture and detect with debug info
-	img, detection, err := e.captureAndDetect()
+	// Capture and detect with debug info (with context for cancellation support)
+	img, detection, err := e.captureAndDetect(ctx)
 
 	// Always prepare debug image info
 	e.prepareDebugImageInfo(img, debugInfo)
