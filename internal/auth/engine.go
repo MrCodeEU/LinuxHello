@@ -769,22 +769,6 @@ func (e *Engine) addDetectionDebugInfo(img image.Image, detection models.Detecti
 	}
 }
 
-// performDebugAuthentication performs the authentication steps for debug mode
-func (e *Engine) performDebugAuthentication(ctx context.Context, img image.Image, detection models.Detection, result *Result) error {
-	// Liveness Check
-	if err := e.performLivenessCheck(img, detection, result); err != nil {
-		return err
-	}
-
-	// Challenge-Response
-	if err := e.performChallenge(ctx, detection, result); err != nil {
-		return err
-	}
-
-	// Identification
-	return e.performIdentification(img, detection, result)
-}
-
 // EnhanceImage converts a grayscale image to RGB for JPEG encoding
 // and applies auto-contrast enhancement
 func EnhanceImage(img image.Image) *image.RGBA {
