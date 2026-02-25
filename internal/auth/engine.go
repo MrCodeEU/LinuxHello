@@ -216,44 +216,78 @@ func (e *Engine) Close() error {
 }
 
 // Authenticate performs face authentication against all enrolled users
+// This function loops continuously until:
+// - Face matches successfully (success)
+// - Context is cancelled (Ctrl+C or timeout)
+// - Liveness check fails (security measure)
 func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 	startTime := time.Now()
-	result := &Result{Success: false}
 
-	// 1. Capture and Detect (with context for cancellation support)
-	img, detection, err := e.captureAndDetect(ctx)
-	if err != nil {
-		result.Error = err
-		return result, nil
-	}
+	// Continuous authentication loop (Windows Hello-like behavior)
+	// Only exits on: success, context cancellation, or liveness failure
+	for {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			e.logger.Info("Authentication cancelled by context")
+			return &Result{
+				Success:        false,
+				Error:          fmt.Errorf("%w", ErrAuthenticationCancelled),
+				ProcessingTime: time.Since(startTime),
+			}, nil
+		default:
+			// Continue with authentication
+		}
 
-	// 2. Liveness Check
-	if err := e.performLivenessCheck(img, detection, result); err != nil {
+		result := &Result{Success: false}
+
+		// 1. Capture and Detect (with context for cancellation support)
+		img, detection, err := e.captureAndDetect(ctx)
+		if err != nil {
+			// If cancelled, return immediately
+			if errors.Is(err, ErrAuthenticationCancelled) {
+				return &Result{
+					Success:        false,
+					Error:          err,
+					ProcessingTime: time.Since(startTime),
+				}, nil
+			}
+			// Other errors: log and continue trying
+			e.logger.Debugf("Face detection error, retrying: %v", err)
+			continue
+		}
+
+		// 2. Liveness Check (security measure - fail immediately if spoofing detected)
+		if err := e.performLivenessCheck(img, detection, result); err != nil {
+			// Liveness failure is terminal - possible spoofing attempt
+			result.ProcessingTime = time.Since(startTime)
+			return result, nil
+		}
+
+		// 3. Challenge-Response
+		if err := e.performChallenge(ctx, detection, result); err != nil {
+			// Challenge failed - log and continue trying
+			e.logger.Debugf("Challenge failed, retrying: %v", err)
+			continue
+		}
+
+		// 4. Identification
+		if err := e.performIdentification(img, detection, result); err != nil {
+			// No match found - log and continue trying
+			e.logger.Debugf("Identification failed, retrying: %v", err)
+			continue
+		}
+
+		// Success!
+		result.Success = true
 		result.ProcessingTime = time.Since(startTime)
+
+		e.recordSuccessfulAuth(result)
+		e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
+			result.User.Username, result.Confidence, result.ProcessingTime)
+
 		return result, nil
 	}
-
-	// 3. Challenge-Response
-	if err := e.performChallenge(ctx, detection, result); err != nil {
-		result.ProcessingTime = time.Since(startTime)
-		return result, nil
-	}
-
-	// 4. Identification
-	if err := e.performIdentification(img, detection, result); err != nil {
-		result.ProcessingTime = time.Since(startTime)
-		return result, nil
-	}
-
-	// Success
-	result.Success = true
-	result.ProcessingTime = time.Since(startTime)
-
-	e.recordSuccessfulAuth(result)
-	e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
-		result.User.Username, result.Confidence, result.ProcessingTime)
-
-	return result, nil
 }
 
 // performLivenessCheck handles the liveness verification step
@@ -486,138 +520,206 @@ func (e *Engine) identifyFace(img image.Image, detection models.Detection) (*emb
 }
 
 // AuthenticateUser authenticates a specific user
+// This function loops continuously until:
+// - Face matches successfully (success)
+// - Context is cancelled (Ctrl+C or timeout)
+// - Liveness check fails (security measure)
 func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result, error) {
 	startTime := time.Now()
-	result := &Result{Success: false}
 
 	if err := e.CheckLockout(username); err != nil {
-		result.Error = err
-		result.ProcessingTime = time.Since(startTime)
-		return result, nil
+		return &Result{Success: false, Error: err, ProcessingTime: time.Since(startTime)}, nil
 	}
 
 	user, err := e.embeddingStore.GetUser(username)
 	if err != nil {
-		result.Error = fmt.Errorf("user not found: %w", err)
-		return result, nil
+		return &Result{Success: false, Error: fmt.Errorf("user not found: %w", err)}, nil
 	}
 
-	// Reuse captureAndDetect helper (with context for cancellation support)
-	img, detection, err := e.captureAndDetect(ctx)
-	if err != nil {
-		result.Error = err
-		return result, nil
-	}
-
-	// Liveness check
-	if e.config.Liveness.Enabled && e.inferenceClient != nil {
-		livenessPassed, err := e.CheckLiveness(img, detection)
-		result.LivenessPassed = livenessPassed
-		if err != nil {
-			e.logger.Warnf("Liveness check failed: %v", err)
+	// Continuous authentication loop (Windows Hello-like behavior)
+	// Only exits on: success, context cancellation, or liveness failure
+	for {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			e.logger.Info("Authentication cancelled by context")
+			return &Result{
+				Success:        false,
+				Error:          fmt.Errorf("%w", ErrAuthenticationCancelled),
+				ProcessingTime: time.Since(startTime),
+			}, nil
+		default:
+			// Continue with authentication
 		}
-		if !livenessPassed {
-			result.Error = fmt.Errorf("liveness check failed")
+
+		// 1. Capture and detect face
+		img, detection, err := e.captureAndDetect(ctx)
+		if err != nil {
+			// If cancelled, return immediately
+			if errors.Is(err, ErrAuthenticationCancelled) {
+				return &Result{
+					Success:        false,
+					Error:          err,
+					ProcessingTime: time.Since(startTime),
+				}, nil
+			}
+			// Other errors: log and continue trying
+			e.logger.Debugf("Face detection error, retrying: %v", err)
+			continue
+		}
+
+		// 2. Liveness check (security measure - fail immediately if spoofing detected)
+		livenessPassed := true
+		if e.config.Liveness.Enabled && e.inferenceClient != nil {
+			livenessPassed, err = e.CheckLiveness(img, detection)
+			if err != nil {
+				e.logger.Warnf("Liveness check error: %v", err)
+			}
+			if !livenessPassed {
+				// Liveness failure is terminal - possible spoofing attempt
+				e.logger.Warn("Liveness check failed - possible spoofing attempt")
+				_ = e.embeddingStore.RecordAuth(
+					user.ID, username, false, 0,
+					false, false, "liveness check failed",
+				)
+				return &Result{
+					Success:        false,
+					Error:          fmt.Errorf("liveness check failed"),
+					LivenessPassed: false,
+					ProcessingTime: time.Since(startTime),
+				}, nil
+			}
+		}
+
+		// 3. Challenge-Response (if enabled)
+		result := &Result{Success: false, LivenessPassed: livenessPassed}
+		if err := e.performChallenge(ctx, detection, result); err != nil {
+			// Challenge failed - log and continue trying
+			e.logger.Debugf("Challenge failed, retrying: %v", err)
+			continue
+		}
+
+		// 4. Extract embedding
+		embedding, err := e.ExtractEmbedding(img, detection)
+		if err != nil {
+			e.logger.Debugf("Embedding extraction failed, retrying: %v", err)
+			continue
+		}
+
+		// 5. Compare with enrolled embeddings
+		bestScore := -1.0
+		for _, userEmbedding := range user.Embeddings {
+			score := models.CosineSimilarity(embedding, userEmbedding)
+			if score > bestScore {
+				bestScore = score
+			}
+		}
+
+		// Check if match is good enough
+		if bestScore >= e.config.Recognition.SimilarityThreshold {
+			// Success!
+			result.Success = true
+			result.User = user
+			result.Confidence = bestScore
 			result.ProcessingTime = time.Since(startTime)
+
 			_ = e.embeddingStore.RecordAuth(
-				user.ID, username, false, 0,
-				false, false, "liveness check failed",
+				user.ID, username, true, bestScore,
+				result.LivenessPassed, result.ChallengePassed, "",
 			)
+
+			e.logger.Infof("User %s authenticated successfully (confidence: %.3f, time: %v)",
+				username, bestScore, result.ProcessingTime)
+
 			return result, nil
 		}
-	} else {
-		result.LivenessPassed = true
+
+		// Face detected but doesn't match - log and continue trying
+		e.logger.Debugf("Face detected but doesn't match user %s (confidence: %.3f), continuing...",
+			username, bestScore)
 	}
-
-	// Challenge-Response
-	if err := e.performChallenge(ctx, detection, result); err != nil {
-		result.ProcessingTime = time.Since(startTime)
-		_ = e.embeddingStore.RecordAuth(
-			user.ID, username, false, 0,
-			result.LivenessPassed, false, "challenge failed",
-		)
-		return result, nil
-	}
-
-	// Extract embedding
-	embedding, err := e.ExtractEmbedding(img, detection)
-	if err != nil {
-		result.Error = fmt.Errorf("failed to extract embedding: %w", err)
-		return result, nil
-	}
-
-	// Compare
-	bestScore := -1.0
-	for _, userEmbedding := range user.Embeddings {
-		score := models.CosineSimilarity(embedding, userEmbedding)
-		if score > bestScore {
-			bestScore = score
-		}
-	}
-
-	result.Confidence = bestScore
-	result.ProcessingTime = time.Since(startTime)
-
-	if bestScore < e.config.Recognition.SimilarityThreshold {
-		result.Error = fmt.Errorf("face does not match (confidence: %.3f)", bestScore)
-		_ = e.embeddingStore.RecordAuth(
-			user.ID, username, false, bestScore,
-			result.LivenessPassed, result.ChallengePassed, "face mismatch",
-		)
-		return result, nil
-	}
-
-	// Success
-	result.Success = true
-	result.User = user
-
-	_ = e.embeddingStore.RecordAuth(
-		user.ID, username, true, bestScore,
-		result.LivenessPassed, true, "",
-	)
-
-	e.logger.Infof("User %s authenticated successfully (confidence: %.3f, time: %v)",
-		username, bestScore, result.ProcessingTime)
-
-	return result, nil
 }
 
 // AuthenticateWithDebug performs authentication and returns debug information
+// This function loops continuously until:
+// - Face matches successfully (success)
+// - Context is cancelled (Ctrl+C or timeout)
+// - Liveness check fails (security measure)
 func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo, error) {
 	startTime := time.Now()
-	result := &Result{Success: false}
 	debugInfo := &DebugInfo{}
 
-	// Capture and detect with debug info (with context for cancellation support)
-	img, detection, err := e.captureAndDetect(ctx)
+	// Continuous authentication loop (Windows Hello-like behavior)
+	// Only exits on: success, context cancellation, or liveness failure
+	for {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			e.logger.Info("Authentication cancelled by context")
+			return &Result{
+				Success:        false,
+				Error:          fmt.Errorf("%w", ErrAuthenticationCancelled),
+				ProcessingTime: time.Since(startTime),
+			}, debugInfo, nil
+		default:
+			// Continue with authentication
+		}
 
-	// Always prepare debug image info
-	e.prepareDebugImageInfo(img, debugInfo)
+		result := &Result{Success: false}
 
-	if err != nil {
-		result.Error = err
+		// 1. Capture and detect with debug info
+		img, detection, err := e.captureAndDetect(ctx)
+		if err != nil {
+			// If cancelled, return immediately
+			if errors.Is(err, ErrAuthenticationCancelled) {
+				return &Result{
+					Success:        false,
+					Error:          err,
+					ProcessingTime: time.Since(startTime),
+				}, debugInfo, nil
+			}
+			// Other errors: log and continue trying
+			e.logger.Debugf("Face detection error, retrying: %v", err)
+			continue
+		}
+
+		// Always prepare debug image info
+		e.prepareDebugImageInfo(img, debugInfo)
+
+		// Add detection debug info
+		e.addDetectionDebugInfo(img, detection, debugInfo)
+
+		// 2. Liveness Check (security measure - fail immediately if spoofing detected)
+		if err := e.performLivenessCheck(img, detection, result); err != nil {
+			// Liveness failure is terminal - possible spoofing attempt
+			result.ProcessingTime = time.Since(startTime)
+			return result, debugInfo, nil
+		}
+
+		// 3. Challenge-Response
+		if err := e.performChallenge(ctx, detection, result); err != nil {
+			// Challenge failed - log and continue trying
+			e.logger.Debugf("Challenge failed, retrying: %v", err)
+			continue
+		}
+
+		// 4. Identification
+		if err := e.performIdentification(img, detection, result); err != nil {
+			// No match found - log and continue trying
+			e.logger.Debugf("Identification failed, retrying: %v", err)
+			continue
+		}
+
+		// Success!
+		result.Success = true
 		result.ProcessingTime = time.Since(startTime)
+		e.recordSuccessfulAuth(result)
+
+		e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
+			result.User.Username, result.Confidence, result.ProcessingTime)
+
 		return result, debugInfo, nil
 	}
-
-	// Add detection debug info
-	e.addDetectionDebugInfo(img, detection, debugInfo)
-
-	// Perform authentication steps
-	if err := e.performDebugAuthentication(ctx, img, detection, result); err != nil {
-		result.ProcessingTime = time.Since(startTime)
-		return result, debugInfo, nil
-	}
-
-	// Success
-	result.Success = true
-	result.ProcessingTime = time.Since(startTime)
-	e.recordSuccessfulAuth(result)
-
-	e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
-		result.User.Username, result.Confidence, result.ProcessingTime)
-
-	return result, debugInfo, nil
 }
 
 // prepareDebugImageInfo prepares image data for debug output
