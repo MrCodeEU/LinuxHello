@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           linuxhello
-Version:        1.4.1
+Version:        %{?version}%{!?version:1.4.1}
 Release:        1%{?dist}
 Summary:        Face authentication system for Linux
 License:        MIT
@@ -148,6 +148,12 @@ echo ""
 %dir %{_localstatedir}/lib/linuxhello
 
 %changelog
+* Tue Feb 25 2026 MrCode <mrcode@example.com> - 1.5.0-1
+- Add continuous face detection with cancellation support (Ctrl+C)
+- Add configurable face detection timeout option
+- Add exponential backoff for face detection retries
+- Fix context cancellation propagation in authentication flow
+
 * Sun Feb 09 2026 MrCode <mrcode@example.com> - 1.4.1-1
 - Add polkit policy for desktop entry to pass display environment variables
 - Fix GUI not launching from desktop entry (pkexec stripped env vars)
