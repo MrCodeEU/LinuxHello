@@ -29,6 +29,11 @@ const errEncodeImage = "failed to encode image: %w"
 // ErrAuthenticationCancelled is returned when authentication is cancelled by context
 var ErrAuthenticationCancelled = errors.New("authentication cancelled")
 
+// authRetryDelay is the delay between authentication retry attempts after post-detection failures
+// (challenge failures, identification failures). This prevents CPU spinning and excessive
+// inference service calls when a face is detected but authentication steps fail.
+const authRetryDelay = 200 * time.Millisecond
+
 // Result represents an authentication result
 type Result struct {
 	Success              bool
@@ -268,6 +273,7 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 		if err := e.performChallenge(ctx, detection, result); err != nil {
 			// Challenge failed - log and continue trying
 			e.logger.Debugf("Challenge failed, retrying: %v", err)
+			time.Sleep(authRetryDelay)
 			continue
 		}
 
@@ -275,6 +281,7 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 		if err := e.performIdentification(img, detection, result); err != nil {
 			// No match found - log and continue trying
 			e.logger.Debugf("Identification failed, retrying: %v", err)
+			time.Sleep(authRetryDelay)
 			continue
 		}
 
@@ -596,6 +603,7 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		if err := e.performChallenge(ctx, detection, result); err != nil {
 			// Challenge failed - log and continue trying
 			e.logger.Debugf("Challenge failed, retrying: %v", err)
+			time.Sleep(authRetryDelay)
 			continue
 		}
 
@@ -603,6 +611,7 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		embedding, err := e.ExtractEmbedding(img, detection)
 		if err != nil {
 			e.logger.Debugf("Embedding extraction failed, retrying: %v", err)
+			time.Sleep(authRetryDelay)
 			continue
 		}
 
@@ -637,6 +646,7 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		// Face detected but doesn't match - log and continue trying
 		e.logger.Debugf("Face detected but doesn't match user %s (confidence: %.3f), continuing...",
 			username, bestScore)
+		time.Sleep(authRetryDelay)
 	}
 }
 
@@ -700,6 +710,7 @@ func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo
 		if err := e.performChallenge(ctx, detection, result); err != nil {
 			// Challenge failed - log and continue trying
 			e.logger.Debugf("Challenge failed, retrying: %v", err)
+			time.Sleep(authRetryDelay)
 			continue
 		}
 
@@ -707,6 +718,7 @@ func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo
 		if err := e.performIdentification(img, detection, result); err != nil {
 			// No match found - log and continue trying
 			e.logger.Debugf("Identification failed, retrying: %v", err)
+			time.Sleep(authRetryDelay)
 			continue
 		}
 
