@@ -33,7 +33,7 @@ The system consists of three main components:
                         └────────────────────┘
 ```
 
-### GUI Architecture (v1.3.4+)
+### GUI Architecture (v1.7.0+)
 The `linuxhello` binary runs an HTTP server serving:
 - **Frontend**: React SPA at `http://localhost:8080` (built from `frontend/`, served from embedded FS)
 - **API Endpoints**: RESTful API for enrollment, auth testing, config, PAM management, logs

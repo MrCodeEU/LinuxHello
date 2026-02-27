@@ -25,7 +25,7 @@ Browser (localhost:8080) ↔ HTTP API (Go) ↔ gRPC (Python ONNX)
                             Camera (go4vl V4L2)
 ```
 
-### GUI Features (v1.3.4+)
+### GUI Features (v1.7.0+)
 - **Real-time Enrollment:** Progress bar showing "Sample X/Y captured" with status messages
 - **Live Camera Preview:** MJPEG stream with bounding box overlays for detection
 - **Authentication Testing:** Test face recognition and see confidence scores + bounding boxes

@@ -309,7 +309,7 @@ pam-restore: ## Restore all PAM configs from backup
 version: ## Show current version
 	@echo "$(VERSION)"
 
-set-version: ## Set version across all files (usage: make set-version VERSION=1.2.3)
+set-version: ## Set version across all files (usage: make set-version VERSION=1.7.0)
 	@if [ "$(VERSION)" = "" ] || echo "$(VERSION)" | grep -q -- '--'; then \
 		echo "Usage: make set-version VERSION=1.2.3"; \
 		exit 1; \
@@ -321,7 +321,7 @@ set-version: ## Set version across all files (usage: make set-version VERSION=1.
 	@echo "Version $(VERSION) set in spec, package.json, wails.json"
 	@echo "To tag: git tag v$(VERSION)"
 
-bump-patch: ## Bump patch version (1.2.3 -> 1.2.4) and update all files
+bump-patch: ## Bump patch version (1.7.0 -> 1.7.1) and update all files
 	@CURRENT=$$(grep '^Version:' packaging/linuxhello.spec | sed 's/Version:[[:space:]]*//'); \
 	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
 	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
@@ -329,14 +329,14 @@ bump-patch: ## Bump patch version (1.2.3 -> 1.2.4) and update all files
 	NEW="$$MAJOR.$$MINOR.$$((PATCH + 1))"; \
 	$(MAKE) set-version VERSION=$$NEW
 
-bump-minor: ## Bump minor version (1.2.3 -> 1.3.0) and update all files
+bump-minor: ## Bump minor version (1.7.0 -> 1.8.0) and update all files
 	@CURRENT=$$(grep '^Version:' packaging/linuxhello.spec | sed 's/Version:[[:space:]]*//'); \
 	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
 	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
 	NEW="$$MAJOR.$$((MINOR + 1)).0"; \
 	$(MAKE) set-version VERSION=$$NEW
 
-bump-major: ## Bump major version (1.2.3 -> 2.0.0) and update all files
+bump-major: ## Bump major version (1.7.0 -> 2.0.0) and update all files
 	@CURRENT=$$(grep '^Version:' packaging/linuxhello.spec | sed 's/Version:[[:space:]]*//'); \
 	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
 	NEW="$$((MAJOR + 1)).0.0"; \
@@ -346,7 +346,7 @@ package: build ## Build distribution packages (RPM, DEB, tarball)
 	@VERSION=$${VERSION:-$$(git describe --tags --always 2>/dev/null || echo "dev")}; \
 	./packaging/build-packages.sh "$$VERSION"
 
-build-rpm: build ## Build RPM package (usage: make build-rpm [VERSION=1.2.3])
+build-rpm: build ## Build RPM package (usage: make build-rpm [VERSION=1.7.0])
 	@if command -v rpmbuild >/dev/null 2>&1; then true; \
 	elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y rpm-build rpmdevtools; \
 	elif command -v apt >/dev/null 2>&1; then sudo apt install -y rpm dpkg-dev; \

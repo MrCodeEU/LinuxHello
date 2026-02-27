@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 
 Name:           linuxhello
-Version:        %{?version}%{!?version:1.4.1}
+Version:        %{?version}%{!?version:1.7.0}
 Release:        1%{?dist}
 Summary:        Face authentication system for Linux
 License:        MIT
