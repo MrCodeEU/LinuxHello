@@ -148,6 +148,19 @@ echo ""
 %dir %{_localstatedir}/lib/linuxhello
 
 %changelog
+* Fri Feb 27 2026 MrCode <mrcode@example.com> - 1.7.0-1
+- Windows Hello-like authentication implementation with full facial recognition
+- Real-time status feedback during authentication
+- Configurable liveness failure handling
+- Graceful fallback to password authentication
+- Enhanced authentication engine with improved accuracy
+- Updated PAM module to support new authentication flow
+- Improved camera handling for better performance and reliability
+- Enhanced error handling and user feedback mechanisms
+- Implemented enhanced liveness detection to prevent spoofing attacks
+- Added secure credential storage for authentication data
+- Improved session management and timeout handling
+
 * Tue Feb 25 2026 MrCode <mrcode@example.com> - 1.5.0-1
 - Add continuous face detection with cancellation support (Ctrl+C)
 - Add configurable face detection timeout option

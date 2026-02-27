@@ -3,7 +3,7 @@
 
 set -e
 
-VERSION=${1:-$(git describe --tags --always)}
+VERSION=${1:-1.7.0}
 ARCH=${2:-$(uname -m)}
 BUILD_DIR="/tmp/linuxhello-build"
 PACKAGE_DIR="$(pwd)/dist/packages"
