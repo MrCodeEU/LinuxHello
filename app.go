@@ -619,7 +619,7 @@ func (a *App) RunAuthTest() (*AuthTestResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, debugInfo, err := a.engine.AuthenticateWithDebug(ctx)
+	result, debugInfo, err := a.engine.AuthenticateWithDebug(ctx, nil)
 	if err != nil {
 		return &AuthTestResult{Success: false, Error: err.Error()}, nil
 	}

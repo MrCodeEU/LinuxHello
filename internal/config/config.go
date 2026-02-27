@@ -115,6 +115,10 @@ type AuthConfig struct {
 	ContinuousAuth       bool   `mapstructure:"continuous_auth" json:"continuous_auth" yaml:"continuous_auth"`
 	SecurityLevel        string `mapstructure:"security_level" json:"security_level" yaml:"security_level"`
 	FaceDetectionTimeout int    `mapstructure:"face_detection_timeout" json:"face_detection_timeout" yaml:"face_detection_timeout"` // Seconds to wait for face detection (0 = wait indefinitely)
+	// Windows Hello-like behavior settings
+	MaxLivenessFailures int  `mapstructure:"max_liveness_failures" json:"max_liveness_failures" yaml:"max_liveness_failures"`    // Max consecutive liveness failures before biometric lockout (0 = unlimited, default: 3)
+	MaxFaceAuthAttempts int  `mapstructure:"max_face_auth_attempts" json:"max_face_auth_attempts" yaml:"max_face_auth_attempts"` // Max face match attempts before fallback to password (0 = unlimited)
+	ShowStatusMessages  bool `mapstructure:"show_status_messages" json:"show_status_messages" yaml:"show_status_messages"`       // Show real-time status messages via PAM conversation (default: true)
 }
 
 // StorageConfig holds data storage configuration
@@ -193,7 +197,10 @@ func DefaultConfig() *Config {
 			FallbackEnabled:      true,
 			ContinuousAuth:       false,
 			SecurityLevel:        "medium",
-			FaceDetectionTimeout: 0, // 0 = no timeout (wait indefinitely for face detection)
+			FaceDetectionTimeout: 0,    // 0 = no timeout (wait indefinitely for face detection)
+			MaxLivenessFailures:  3,    // Lock biometric after 3 consecutive liveness failures; 0 = unlimited (Windows Hello-like)
+			MaxFaceAuthAttempts:  0,    // 0 = unlimited face match attempts (Windows Hello-like)
+			ShowStatusMessages:   true, // Show real-time status messages via PAM
 		},
 		Storage: StorageConfig{
 			DataDir:       "/var/lib/linuxhello",

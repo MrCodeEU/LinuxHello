@@ -194,9 +194,10 @@ func setupSignalHandler(parentCtx context.Context) (context.Context, context.Can
 	return ctx, cancel
 }
 
-// performAuthentication executes the authentication process
+// performAuthentication executes the authentication process.
+// Provides Windows Hello-like real-time status messages via PAM conversation.
 // The authentication will wait for a face to be detected (with optional timeout),
-// and can be cancelled via Ctrl+C (SIGINT) or the context
+// and can be cancelled via Ctrl+C (SIGINT) or the context.
 func performAuthentication(pamh *C.pam_handle_t, engine *auth.Engine, cfg *config.Config, username string) C.int {
 	// Create base context
 	ctx := context.Background()
@@ -214,14 +215,47 @@ func performAuthentication(pamh *C.pam_handle_t, engine *auth.Engine, cfg *confi
 		logger.Debugf("Face detection timeout set to %d seconds", cfg.Auth.FaceDetectionTimeout)
 	}
 
-	pamInfo(pamh, "LinuxHello: Waiting for face detection... (Ctrl+C to cancel)")
+	// Create status channel for real-time Windows Hello-like feedback.
+	// Buffer of 32 to absorb bursts during rapid retry loops; sendStatus drops
+	// updates non-blocking if the goroutine falls behind (e.g. PAM conversation blocks).
+	statusChan := make(chan auth.StatusUpdate, 32)
 
-	result, err := engine.AuthenticateUser(ctx, username)
+	// Relay status updates to PAM conversation in a separate goroutine
+	statusDone := make(chan struct{})
+	go func() {
+		defer close(statusDone)
+		lastMsg := ""
+		for update := range statusChan {
+			if !cfg.Auth.ShowStatusMessages {
+				continue
+			}
+			msg := "LinuxHello: " + update.Message
+			// Avoid sending duplicate consecutive messages (e.g. repeated "Looking for you...")
+			if msg == lastMsg {
+				continue
+			}
+			lastMsg = msg
+			switch update.Status {
+			case auth.StatusSuccess:
+				pamInfo(pamh, msg)
+			case auth.StatusLivenessHint, auth.StatusNoMatch:
+				pamError(pamh, msg)
+			case auth.StatusFallback:
+				pamError(pamh, msg) // security-relevant: biometric lockout or max attempts exceeded
+			default:
+				pamInfo(pamh, msg)
+			}
+		}
+	}()
+
+	result, err := engine.AuthenticateUser(ctx, username, statusChan)
+	close(statusChan)
+	<-statusDone // Wait for all status messages to be sent
+
 	if err != nil {
 		// Check if cancelled by user (Ctrl+C)
 		if ctx.Err() == context.Canceled {
 			logger.Info("Authentication cancelled by user (Ctrl+C)")
-			pamInfo(pamh, "LinuxHello: Authentication cancelled")
 			return C.PAM_AUTH_ERR
 		}
 		// Check if timed out
@@ -238,20 +272,31 @@ func performAuthentication(pamh *C.pam_handle_t, engine *auth.Engine, cfg *confi
 	if result.Success {
 		logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
 			username, result.Confidence, result.ProcessingTime)
-		pamInfo(pamh, fmt.Sprintf("LinuxHello: Authenticated as %s", username))
 		return C.PAM_SUCCESS
 	}
 
-	// Check if the error was due to cancellation or timeout
-	if result.Error != nil && errors.Is(result.Error, auth.ErrAuthenticationCancelled) {
-		if ctx.Err() == context.DeadlineExceeded {
-			logger.Info("Face detection timed out")
-			pamInfo(pamh, "LinuxHello: Face detection timed out")
+	// Handle specific failure modes
+	if result.Error != nil {
+		switch {
+		case errors.Is(result.Error, auth.ErrAuthenticationCancelled):
+			if ctx.Err() == context.DeadlineExceeded {
+				logger.Info("Face detection timed out")
+				pamInfo(pamh, "LinuxHello: Face detection timed out")
+				return fallbackOrError(cfg)
+			}
+			logger.Info("Authentication cancelled by user (Ctrl+C)")
+			return C.PAM_AUTH_ERR
+
+		case errors.Is(result.Error, auth.ErrBiometricLockout):
+			// Too many liveness failures - fall back to password
+			logger.Warn("Biometric lockout: falling back to password authentication")
+			return fallbackOrError(cfg)
+
+		case errors.Is(result.Error, auth.ErrMaxAttemptsExceeded):
+			// Too many face match attempts - fall back to password
+			logger.Warn("Max face auth attempts exceeded: falling back to password authentication")
 			return fallbackOrError(cfg)
 		}
-		logger.Info("Authentication cancelled by user (Ctrl+C)")
-		pamInfo(pamh, "LinuxHello: Authentication cancelled")
-		return C.PAM_AUTH_ERR
 	}
 
 	logger.Warnf("Authentication failed for user %s: %v", username, result.Error)

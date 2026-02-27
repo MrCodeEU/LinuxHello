@@ -168,7 +168,7 @@ func handleConnection(conn net.Conn, engine *auth.Engine, logger *logrus.Logger)
 	authCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, err := engine.AuthenticateUser(authCtx, username)
+	result, err := engine.AuthenticateUser(authCtx, username, nil)
 	if err != nil {
 		_, _ = conn.Write([]byte("ERROR: " + err.Error()))
 		return

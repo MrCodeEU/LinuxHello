@@ -29,10 +29,59 @@ const errEncodeImage = "failed to encode image: %w"
 // ErrAuthenticationCancelled is returned when authentication is cancelled by context
 var ErrAuthenticationCancelled = errors.New("authentication cancelled")
 
+// ErrBiometricLockout is returned when too many consecutive liveness failures occur,
+// indicating a possible spoofing attempt. Triggers fallback to password.
+var ErrBiometricLockout = errors.New("biometric authentication locked out due to liveness failures")
+
+// ErrMaxAttemptsExceeded is returned when the configured face auth attempt limit is reached.
+// Triggers fallback to password.
+var ErrMaxAttemptsExceeded = errors.New("maximum face authentication attempts exceeded")
+
 // authRetryDelay is the delay between authentication retry attempts after post-detection failures
 // (challenge failures, identification failures). This prevents CPU spinning and excessive
 // inference service calls when a face is detected but authentication steps fail.
 const authRetryDelay = 200 * time.Millisecond
+
+// AuthStatus represents the current state of authentication for real-time UI/PAM feedback.
+// This mirrors the Windows Hello status messages shown during authentication.
+type AuthStatus int
+
+const (
+	// StatusWaitingForFace means no face has been detected yet ("Looking for you...")
+	StatusWaitingForFace AuthStatus = iota
+	// StatusFaceDetected means a face was found and checks are running ("Making sure it's you...")
+	StatusFaceDetected
+	// StatusLivenessHint means liveness check failed; user should look at camera
+	StatusLivenessHint
+	// StatusNoMatch means the face was detected but didn't match the enrolled user
+	StatusNoMatch
+	// StatusSuccess means authentication succeeded ("Hi [Name]!")
+	StatusSuccess
+	// StatusCancelled means authentication was cancelled by the user or context
+	StatusCancelled
+	// StatusFallback means biometric auth is giving up and falling back to password
+	StatusFallback
+)
+
+// StatusUpdate is sent on the status channel during authentication to provide
+// real-time feedback to the caller (PAM module, GUI, CLI).
+type StatusUpdate struct {
+	Status   AuthStatus
+	Username string // Populated on StatusSuccess
+	Message  string // Human-readable message suitable for display
+}
+
+// sendStatus sends a status update on the channel if it is non-nil and non-blocking.
+func sendStatus(ch chan<- StatusUpdate, update StatusUpdate) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- update:
+	default:
+		// Drop if channel is full to avoid blocking the auth loop
+	}
+}
 
 // Result represents an authentication result
 type Result struct {
@@ -220,21 +269,30 @@ func (e *Engine) Close() error {
 	return nil
 }
 
-// Authenticate performs face authentication against all enrolled users
+// Authenticate performs face authentication against all enrolled users.
+// statusChan receives real-time status updates (Windows Hello-like feedback); pass nil to disable.
 // This function loops continuously until:
 // - Face matches successfully (success)
 // - Context is cancelled (Ctrl+C or timeout)
-// - Liveness check fails (security measure)
-func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
+// - MaxLivenessFailures consecutive liveness failures (biometric lockout)
+// - MaxFaceAuthAttempts face match attempts exceeded (fallback to password)
+func (e *Engine) Authenticate(ctx context.Context, statusChan chan<- StatusUpdate) (*Result, error) {
 	startTime := time.Now()
+	livenessFailures := 0
+	faceAuthAttempts := 0
+	maxLiveness := e.config.Auth.MaxLivenessFailures
+	maxAttempts := e.config.Auth.MaxFaceAuthAttempts
+
+	sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 
 	// Continuous authentication loop (Windows Hello-like behavior)
-	// Only exits on: success, context cancellation, or liveness failure
+	// Only exits on: success, context cancellation, biometric lockout, or max attempts
 	for {
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
 			e.logger.Info("Authentication cancelled by context")
+			sendStatus(statusChan, StatusUpdate{Status: StatusCancelled, Message: "Authentication cancelled"})
 			return &Result{
 				Success:        false,
 				Error:          fmt.Errorf("%w", ErrAuthenticationCancelled),
@@ -251,6 +309,7 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 		if err != nil {
 			// If cancelled, return immediately
 			if errors.Is(err, ErrAuthenticationCancelled) {
+				sendStatus(statusChan, StatusUpdate{Status: StatusCancelled, Message: "Authentication cancelled"})
 				return &Result{
 					Success:        false,
 					Error:          err,
@@ -259,29 +318,58 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 			}
 			// Other errors: log and continue trying
 			e.logger.Debugf("Face detection error, retrying: %v", err)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			continue
 		}
 
-		// 2. Liveness Check (security measure - fail immediately if spoofing detected)
+		sendStatus(statusChan, StatusUpdate{Status: StatusFaceDetected, Message: "Making sure it's you..."})
+
+		// 2. Liveness Check (Windows Hello: retry up to MaxLivenessFailures, then lock biometric)
 		if err := e.performLivenessCheck(img, detection, result); err != nil {
-			// Liveness failure is terminal - possible spoofing attempt
-			result.ProcessingTime = time.Since(startTime)
-			return result, nil
+			livenessFailures++
+			e.logger.Warnf("Liveness check failed (%d/%d): %v", livenessFailures, maxLiveness, err)
+			sendStatus(statusChan, StatusUpdate{Status: StatusLivenessHint, Message: "Make sure you are looking at the camera"})
+
+			if maxLiveness > 0 && livenessFailures >= maxLiveness {
+				// Biometric lockout - too many liveness failures (possible spoofing)
+				e.logger.Warn("Biometric lockout: too many consecutive liveness failures")
+				result.ProcessingTime = time.Since(startTime)
+				result.Error = ErrBiometricLockout
+				sendStatus(statusChan, StatusUpdate{Status: StatusFallback, Message: "Switching to password authentication"})
+				return result, nil
+			}
+			// Not yet at limit - retry
+			time.Sleep(authRetryDelay)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
+			continue
 		}
+		// Liveness passed - reset counter
+		livenessFailures = 0
 
 		// 3. Challenge-Response
 		if err := e.performChallenge(ctx, detection, result); err != nil {
 			// Challenge failed - log and continue trying
 			e.logger.Debugf("Challenge failed, retrying: %v", err)
 			time.Sleep(authRetryDelay)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			continue
 		}
 
 		// 4. Identification
+		faceAuthAttempts++
 		if err := e.performIdentification(img, detection, result); err != nil {
 			// No match found - log and continue trying
-			e.logger.Debugf("Identification failed, retrying: %v", err)
+			e.logger.Debugf("Identification failed (attempt %d), retrying: %v", faceAuthAttempts, err)
+			sendStatus(statusChan, StatusUpdate{Status: StatusNoMatch, Message: "We didn't recognize you"})
+
+			if maxAttempts > 0 && faceAuthAttempts >= maxAttempts {
+				e.logger.Warnf("Max face auth attempts (%d) exceeded, falling back to password", maxAttempts)
+				result.Error = ErrMaxAttemptsExceeded
+				sendStatus(statusChan, StatusUpdate{Status: StatusFallback, Message: "Switching to password authentication"})
+				return result, nil
+			}
 			time.Sleep(authRetryDelay)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			continue
 		}
 
@@ -292,6 +380,11 @@ func (e *Engine) Authenticate(ctx context.Context) (*Result, error) {
 		e.recordSuccessfulAuth(result)
 		e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
 			result.User.Username, result.Confidence, result.ProcessingTime)
+		sendStatus(statusChan, StatusUpdate{
+			Status:   StatusSuccess,
+			Username: result.User.Username,
+			Message:  fmt.Sprintf("Hi %s!", result.User.Username),
+		})
 
 		return result, nil
 	}
@@ -526,12 +619,14 @@ func (e *Engine) identifyFace(img image.Image, detection models.Detection) (*emb
 	return user, confidence, nil
 }
 
-// AuthenticateUser authenticates a specific user
+// AuthenticateUser authenticates a specific user.
+// statusChan receives real-time status updates (Windows Hello-like feedback); pass nil to disable.
 // This function loops continuously until:
 // - Face matches successfully (success)
 // - Context is cancelled (Ctrl+C or timeout)
-// - Liveness check fails (security measure)
-func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result, error) {
+// - MaxLivenessFailures consecutive liveness failures (biometric lockout)
+// - MaxFaceAuthAttempts face match attempts exceeded (fallback to password)
+func (e *Engine) AuthenticateUser(ctx context.Context, username string, statusChan chan<- StatusUpdate) (*Result, error) {
 	startTime := time.Now()
 
 	if err := e.CheckLockout(username); err != nil {
@@ -543,13 +638,21 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		return &Result{Success: false, Error: fmt.Errorf("user not found: %w", err)}, nil
 	}
 
+	livenessFailures := 0
+	faceAuthAttempts := 0
+	maxLiveness := e.config.Auth.MaxLivenessFailures
+	maxAttempts := e.config.Auth.MaxFaceAuthAttempts
+
+	sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
+
 	// Continuous authentication loop (Windows Hello-like behavior)
-	// Only exits on: success, context cancellation, or liveness failure
+	// Only exits on: success, context cancellation, biometric lockout, or max attempts
 	for {
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
 			e.logger.Info("Authentication cancelled by context")
+			sendStatus(statusChan, StatusUpdate{Status: StatusCancelled, Message: "Authentication cancelled"})
 			return &Result{
 				Success:        false,
 				Error:          fmt.Errorf("%w", ErrAuthenticationCancelled),
@@ -564,6 +667,7 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		if err != nil {
 			// If cancelled, return immediately
 			if errors.Is(err, ErrAuthenticationCancelled) {
+				sendStatus(statusChan, StatusUpdate{Status: StatusCancelled, Message: "Authentication cancelled"})
 				return &Result{
 					Success:        false,
 					Error:          err,
@@ -572,31 +676,50 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 			}
 			// Other errors: log and continue trying
 			e.logger.Debugf("Face detection error, retrying: %v", err)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			continue
 		}
 
-		// 2. Liveness check (security measure - fail immediately if spoofing detected)
+		sendStatus(statusChan, StatusUpdate{Status: StatusFaceDetected, Message: "Making sure it's you..."})
+
+		// 2. Liveness check (Windows Hello: retry up to MaxLivenessFailures, then lock biometric)
 		livenessPassed := true
 		if e.config.Liveness.Enabled && e.inferenceClient != nil {
 			livenessPassed, err = e.CheckLiveness(img, detection)
 			if err != nil {
 				e.logger.Warnf("Liveness check error: %v", err)
+				livenessPassed = false // treat inference error as liveness failure (fail-secure)
 			}
 			if !livenessPassed {
-				// Liveness failure is terminal - possible spoofing attempt
-				e.logger.Warn("Liveness check failed - possible spoofing attempt")
+				livenessFailures++
+				e.logger.Warnf("Liveness check failed (%d/%d) for user %s - possible spoofing attempt",
+					livenessFailures, maxLiveness, username)
 				_ = e.embeddingStore.RecordAuth(
 					user.ID, username, false, 0,
 					false, false, "liveness check failed",
 				)
-				return &Result{
-					Success:        false,
-					Error:          fmt.Errorf("liveness check failed"),
-					LivenessPassed: false,
-					ProcessingTime: time.Since(startTime),
-				}, nil
+				e.RecordFailure(username)
+				sendStatus(statusChan, StatusUpdate{Status: StatusLivenessHint, Message: "Make sure you are looking at the camera"})
+
+				if maxLiveness > 0 && livenessFailures >= maxLiveness {
+					// Biometric lockout - too many consecutive liveness failures
+					e.logger.Warn("Biometric lockout: too many consecutive liveness failures")
+					sendStatus(statusChan, StatusUpdate{Status: StatusFallback, Message: "Switching to password authentication"})
+					return &Result{
+						Success:        false,
+						Error:          ErrBiometricLockout,
+						LivenessPassed: false,
+						ProcessingTime: time.Since(startTime),
+					}, nil
+				}
+				// Not yet at limit - retry
+				time.Sleep(authRetryDelay)
+				sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
+				continue
 			}
 		}
+		// Liveness passed - reset counter
+		livenessFailures = 0
 
 		// 3. Challenge-Response (if enabled)
 		result := &Result{Success: false, LivenessPassed: livenessPassed}
@@ -604,21 +727,24 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 			// Challenge failed - log and continue trying
 			e.logger.Debugf("Challenge failed, retrying: %v", err)
 			time.Sleep(authRetryDelay)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			continue
 		}
 
 		// 4. Extract embedding
-		embedding, err := e.ExtractEmbedding(img, detection)
+		emb, err := e.ExtractEmbedding(img, detection)
 		if err != nil {
 			e.logger.Debugf("Embedding extraction failed, retrying: %v", err)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			time.Sleep(authRetryDelay)
 			continue
 		}
 
 		// 5. Compare with enrolled embeddings
+		faceAuthAttempts++
 		bestScore := -1.0
 		for _, userEmbedding := range user.Embeddings {
-			score := models.CosineSimilarity(embedding, userEmbedding)
+			score := models.CosineSimilarity(emb, userEmbedding)
 			if score > bestScore {
 				bestScore = score
 			}
@@ -636,9 +762,15 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 				user.ID, username, true, bestScore,
 				result.LivenessPassed, result.ChallengePassed, "",
 			)
+			e.RecordSuccess(username)
 
 			e.logger.Infof("User %s authenticated successfully (confidence: %.3f, time: %v)",
 				username, bestScore, result.ProcessingTime)
+			sendStatus(statusChan, StatusUpdate{
+				Status:   StatusSuccess,
+				Username: username,
+				Message:  fmt.Sprintf("Hi %s!", username),
+			})
 
 			return result, nil
 		}
@@ -646,26 +778,47 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string) (*Result
 		// Face detected but doesn't match - log and continue trying
 		e.logger.Debugf("Face detected but doesn't match user %s (confidence: %.3f), continuing...",
 			username, bestScore)
+		sendStatus(statusChan, StatusUpdate{Status: StatusNoMatch, Message: "We didn't recognize you"})
+
+		if maxAttempts > 0 && faceAuthAttempts >= maxAttempts {
+			e.logger.Warnf("Max face auth attempts (%d) exceeded for user %s, falling back to password", maxAttempts, username)
+			sendStatus(statusChan, StatusUpdate{Status: StatusFallback, Message: "Switching to password authentication"})
+			return &Result{
+				Success:        false,
+				Error:          ErrMaxAttemptsExceeded,
+				ProcessingTime: time.Since(startTime),
+			}, nil
+		}
 		time.Sleep(authRetryDelay)
+		sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 	}
 }
 
-// AuthenticateWithDebug performs authentication and returns debug information
+// AuthenticateWithDebug performs authentication and returns debug information.
+// statusChan receives real-time status updates (Windows Hello-like feedback); pass nil to disable.
 // This function loops continuously until:
 // - Face matches successfully (success)
 // - Context is cancelled (Ctrl+C or timeout)
-// - Liveness check fails (security measure)
-func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo, error) {
+// - MaxLivenessFailures consecutive liveness failures (biometric lockout)
+// - MaxFaceAuthAttempts face match attempts exceeded (fallback to password)
+func (e *Engine) AuthenticateWithDebug(ctx context.Context, statusChan chan<- StatusUpdate) (*Result, *DebugInfo, error) {
 	startTime := time.Now()
 	debugInfo := &DebugInfo{}
+	livenessFailures := 0
+	faceAuthAttempts := 0
+	maxLiveness := e.config.Auth.MaxLivenessFailures
+	maxAttempts := e.config.Auth.MaxFaceAuthAttempts
+
+	sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 
 	// Continuous authentication loop (Windows Hello-like behavior)
-	// Only exits on: success, context cancellation, or liveness failure
+	// Only exits on: success, context cancellation, biometric lockout, or max attempts
 	for {
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
 			e.logger.Info("Authentication cancelled by context")
+			sendStatus(statusChan, StatusUpdate{Status: StatusCancelled, Message: "Authentication cancelled"})
 			return &Result{
 				Success:        false,
 				Error:          fmt.Errorf("%w", ErrAuthenticationCancelled),
@@ -682,6 +835,7 @@ func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo
 		if err != nil {
 			// If cancelled, return immediately
 			if errors.Is(err, ErrAuthenticationCancelled) {
+				sendStatus(statusChan, StatusUpdate{Status: StatusCancelled, Message: "Authentication cancelled"})
 				return &Result{
 					Success:        false,
 					Error:          err,
@@ -690,6 +844,7 @@ func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo
 			}
 			// Other errors: log and continue trying
 			e.logger.Debugf("Face detection error, retrying: %v", err)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			continue
 		}
 
@@ -699,26 +854,54 @@ func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo
 		// Add detection debug info
 		e.addDetectionDebugInfo(img, detection, debugInfo)
 
-		// 2. Liveness Check (security measure - fail immediately if spoofing detected)
+		sendStatus(statusChan, StatusUpdate{Status: StatusFaceDetected, Message: "Making sure it's you..."})
+
+		// 2. Liveness Check (Windows Hello: retry up to MaxLivenessFailures, then lock biometric)
 		if err := e.performLivenessCheck(img, detection, result); err != nil {
-			// Liveness failure is terminal - possible spoofing attempt
-			result.ProcessingTime = time.Since(startTime)
-			return result, debugInfo, nil
+			livenessFailures++
+			e.logger.Warnf("Liveness check failed (%d/%d): %v", livenessFailures, maxLiveness, err)
+			sendStatus(statusChan, StatusUpdate{Status: StatusLivenessHint, Message: "Make sure you are looking at the camera"})
+
+			if maxLiveness > 0 && livenessFailures >= maxLiveness {
+				// Biometric lockout - too many consecutive liveness failures
+				e.logger.Warn("Biometric lockout: too many consecutive liveness failures")
+				result.ProcessingTime = time.Since(startTime)
+				result.Error = ErrBiometricLockout
+				sendStatus(statusChan, StatusUpdate{Status: StatusFallback, Message: "Switching to password authentication"})
+				return result, debugInfo, nil
+			}
+			// Not yet at limit - retry
+			time.Sleep(authRetryDelay)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
+			continue
 		}
+		// Liveness passed - reset counter
+		livenessFailures = 0
 
 		// 3. Challenge-Response
 		if err := e.performChallenge(ctx, detection, result); err != nil {
 			// Challenge failed - log and continue trying
 			e.logger.Debugf("Challenge failed, retrying: %v", err)
 			time.Sleep(authRetryDelay)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			continue
 		}
 
 		// 4. Identification
+		faceAuthAttempts++
 		if err := e.performIdentification(img, detection, result); err != nil {
 			// No match found - log and continue trying
-			e.logger.Debugf("Identification failed, retrying: %v", err)
+			e.logger.Debugf("Identification failed (attempt %d), retrying: %v", faceAuthAttempts, err)
+			sendStatus(statusChan, StatusUpdate{Status: StatusNoMatch, Message: "We didn't recognize you"})
+
+			if maxAttempts > 0 && faceAuthAttempts >= maxAttempts {
+				e.logger.Warnf("Max face auth attempts (%d) exceeded, falling back to password", maxAttempts)
+				result.Error = ErrMaxAttemptsExceeded
+				sendStatus(statusChan, StatusUpdate{Status: StatusFallback, Message: "Switching to password authentication"})
+				return result, debugInfo, nil
+			}
 			time.Sleep(authRetryDelay)
+			sendStatus(statusChan, StatusUpdate{Status: StatusWaitingForFace, Message: "Looking for you..."})
 			continue
 		}
 
@@ -729,6 +912,11 @@ func (e *Engine) AuthenticateWithDebug(ctx context.Context) (*Result, *DebugInfo
 
 		e.logger.Infof("Authentication successful for user %s (confidence: %.3f, time: %v)",
 			result.User.Username, result.Confidence, result.ProcessingTime)
+		sendStatus(statusChan, StatusUpdate{
+			Status:   StatusSuccess,
+			Username: result.User.Username,
+			Message:  fmt.Sprintf("Hi %s!", result.User.Username),
+		})
 
 		return result, debugInfo, nil
 	}

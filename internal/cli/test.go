@@ -93,9 +93,9 @@ func runSingleAuth(cfg *config.Config, username string, logger *logrus.Logger) e
 
 	var result *auth.Result
 	if username != "" {
-		result, err = engine.AuthenticateUser(ctx, username)
+		result, err = engine.AuthenticateUser(ctx, username, nil)
 	} else {
-		result, err = engine.Authenticate(ctx)
+		result, err = engine.Authenticate(ctx, nil)
 	}
 
 	if err != nil {
@@ -202,9 +202,9 @@ func processContinuousFrame(engine *auth.Engine, username string, showFPS bool, 
 	var err error
 
 	if username != "" {
-		result, err = engine.AuthenticateUser(ctx, username)
+		result, err = engine.AuthenticateUser(ctx, username, nil)
 	} else {
-		result, err = engine.Authenticate(ctx)
+		result, err = engine.Authenticate(ctx, nil)
 	}
 
 	stats.attempts++
