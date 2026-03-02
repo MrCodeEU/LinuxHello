@@ -359,6 +359,56 @@ func (s *Store) GetAuthHistory(username string, limit int) ([]AuthLog, error) {
 	return logs, rows.Err()
 }
 
+// CountFailuresSince counts failed authentication attempts for a user since a given time.
+func (s *Store) CountFailuresSince(username string, since time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM auth_logs WHERE username = ? AND success = 0 AND created_at >= ?`,
+		username, since,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count failures: %w", err)
+	}
+
+	return count, nil
+}
+
+// GetLastSuccessTime returns the timestamp of the most recent successful authentication.
+func (s *Store) GetLastSuccessTime(username string) (*time.Time, error) {
+	var ts sql.NullTime
+	err := s.db.QueryRow(
+		`SELECT MAX(created_at) FROM auth_logs WHERE username = ? AND success = 1`,
+		username,
+	).Scan(&ts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get last success time: %w", err)
+	}
+
+	if !ts.Valid {
+		return nil, nil
+	}
+
+	return &ts.Time, nil
+}
+
+// GetLastFailureTimeSince returns the latest failed authentication timestamp since a given time.
+func (s *Store) GetLastFailureTimeSince(username string, since time.Time) (*time.Time, error) {
+	var ts sql.NullTime
+	err := s.db.QueryRow(
+		`SELECT MAX(created_at) FROM auth_logs WHERE username = ? AND success = 0 AND created_at >= ?`,
+		username, since,
+	).Scan(&ts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get last failure time: %w", err)
+	}
+
+	if !ts.Valid {
+		return nil, nil
+	}
+
+	return &ts.Time, nil
+}
+
 // AuthLog represents an authentication log entry
 type AuthLog struct {
 	ID              int64     `json:"id"`

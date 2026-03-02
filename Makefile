@@ -14,6 +14,7 @@ LIBDIR=$(PREFIX)/lib
 SYSCONFDIR=/etc
 PAMDIR=$(LIBDIR)/security
 SYSTEM_PAMDIR?=$(shell if [ -d /lib64/security ]; then echo /lib64/security; elif [ -d /lib/x86_64-linux-gnu/security ]; then echo /lib/x86_64-linux-gnu/security; elif [ -d /lib/security ]; then echo /lib/security; else echo /usr/lib/security; fi)
+SYSTEMDDIR?=/etc/systemd/system
 
 # Go
 GOBUILD=go build
@@ -221,6 +222,7 @@ install: build ## Install system-wide
 	install -d $(DESTDIR)$(SYSTEM_PAMDIR)
 	install -d $(DESTDIR)$(SYSCONFDIR)/linuxhello
 	install -d $(DESTDIR)/usr/share/linuxhello/python-service
+	install -d $(DESTDIR)/usr/libexec/linuxhello
 	install -d $(DESTDIR)/usr/share/linuxhello/models
 	install -d $(DESTDIR)/usr/share/linuxhello/icons
 	install -d $(DESTDIR)/usr/share/applications
@@ -233,18 +235,23 @@ install: build ## Install system-wide
 	install -d $(DESTDIR)/usr/share/icons/hicolor/256x256/apps
 	install -d $(DESTDIR)/usr/share/icons/hicolor/512x512/apps
 	install -d $(DESTDIR)/usr/share/icons/hicolor/scalable/apps
-	install -d $(DESTDIR)/etc/systemd/system
+	install -d $(DESTDIR)/usr/share/polkit-1/actions
+	install -d $(DESTDIR)$(SYSTEMDDIR)
 	install -d $(DESTDIR)/var/lib/linuxhello
 	install -m 755 bin/$(BINARY_NAME) $(DESTDIR)$(BINDIR)/
 	install -m 755 bin/$(PAM_MODULE) $(DESTDIR)$(PAMDIR)/
-	@ln -sf $(DESTDIR)$(PAMDIR)/$(PAM_MODULE) $(DESTDIR)$(SYSTEM_PAMDIR)/$(PAM_MODULE) 2>/dev/null || \
-		cp bin/$(PAM_MODULE) $(DESTDIR)$(SYSTEM_PAMDIR)/$(PAM_MODULE)
+	@if [ -z "$(DESTDIR)" ] && [ "$(SYSTEM_PAMDIR)" != "$(PAMDIR)" ]; then \
+		ln -sf $(PAMDIR)/$(PAM_MODULE) $(SYSTEM_PAMDIR)/$(PAM_MODULE) 2>/dev/null || \
+		cp bin/$(PAM_MODULE) $(SYSTEM_PAMDIR)/$(PAM_MODULE); \
+	fi
 	install -m 644 configs/linuxhello.conf $(DESTDIR)$(SYSCONFDIR)/linuxhello/
 	cp -r python-service/*.py python-service/requirements.txt $(DESTDIR)/usr/share/linuxhello/python-service/
-	install -m 644 systemd/linuxhello-inference.service $(DESTDIR)/etc/systemd/system/
+	install -m 755 scripts/sync-python-venv.sh $(DESTDIR)/usr/libexec/linuxhello/
+	install -m 644 systemd/linuxhello-inference.service $(DESTDIR)$(SYSTEMDDIR)/
 	@if [ -f models/det_10g.onnx ]; then cp models/*.onnx $(DESTDIR)/usr/share/linuxhello/models/; fi
 	install -m 755 scripts/linuxhello-pam $(DESTDIR)$(BINDIR)/
 	install -m 644 packaging/linuxhello.desktop $(DESTDIR)/usr/share/applications/
+	install -m 644 packaging/com.github.mrcodeeu.linuxhello.policy $(DESTDIR)/usr/share/polkit-1/actions/
 	install -m 644 assets/linuxhello-icon.svg $(DESTDIR)/usr/share/icons/hicolor/scalable/apps/linuxhello.svg
 	@for size in 16 24 32 48 64 128 256 512; do \
 		if [ -f assets/linuxhello-icon-$${size}.png ]; then \
@@ -253,8 +260,8 @@ install: build ## Install system-wide
 	done
 	install -m 644 assets/linuxhello-icon-*.png $(DESTDIR)/usr/share/linuxhello/icons/ 2>/dev/null || true
 	install -m 644 assets/linuxhello-icon.svg $(DESTDIR)/usr/share/linuxhello/icons/ 2>/dev/null || true
-	@gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
-	@systemctl daemon-reload 2>/dev/null || true
+	@if [ -z "$(DESTDIR)" ]; then gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true; fi
+	@if [ -z "$(DESTDIR)" ]; then systemctl daemon-reload 2>/dev/null || true; fi
 	@echo ""
 	@echo "Installed! Next steps:"
 	@echo "  sudo systemctl start linuxhello-inference"
@@ -267,14 +274,16 @@ uninstall: ## Uninstall LinuxHello
 	rm -f $(DESTDIR)$(BINDIR)/linuxhello-pam
 	rm -f $(DESTDIR)$(PAMDIR)/$(PAM_MODULE)
 	rm -f $(DESTDIR)$(SYSTEM_PAMDIR)/$(PAM_MODULE)
-	rm -f /etc/systemd/system/linuxhello-inference.service
+	rm -f $(DESTDIR)/usr/libexec/linuxhello/sync-python-venv.sh
+	rm -f $(DESTDIR)$(SYSTEMDDIR)/linuxhello-inference.service
 	rm -f $(DESTDIR)/usr/share/applications/linuxhello.desktop
+	rm -f $(DESTDIR)/usr/share/polkit-1/actions/com.github.mrcodeeu.linuxhello.policy
 	rm -f $(DESTDIR)/usr/share/icons/hicolor/scalable/apps/linuxhello.svg
 	@for size in 16 24 32 48 64 128 256 512; do \
 		rm -f $(DESTDIR)/usr/share/icons/hicolor/$${size}x$${size}/apps/linuxhello.png; \
 	done
-	@gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true
-	@systemctl daemon-reload 2>/dev/null || true
+	@if [ -z "$(DESTDIR)" ]; then gtk-update-icon-cache /usr/share/icons/hicolor 2>/dev/null || true; fi
+	@if [ -z "$(DESTDIR)" ]; then systemctl daemon-reload 2>/dev/null || true; fi
 	@echo "Note: Config and data not removed. To fully clean:"
 	@echo "  sudo rm -rf $(SYSCONFDIR)/linuxhello /usr/share/linuxhello /var/lib/linuxhello"
 

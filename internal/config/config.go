@@ -199,7 +199,7 @@ func DefaultConfig() *Config {
 			SecurityLevel:        "medium",
 			FaceDetectionTimeout: 0,    // 0 = no timeout (wait indefinitely for face detection)
 			MaxLivenessFailures:  3,    // Lock biometric after 3 consecutive liveness failures; 0 = unlimited (Windows Hello-like)
-			MaxFaceAuthAttempts:  0,    // 0 = unlimited face match attempts (Windows Hello-like)
+			MaxFaceAuthAttempts:  5,    // Fallback to password after 5 non-matching face attempts
 			ShowStatusMessages:   true, // Show real-time status messages via PAM
 		},
 		Storage: StorageConfig{

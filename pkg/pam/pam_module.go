@@ -278,6 +278,11 @@ func performAuthentication(pamh *C.pam_handle_t, engine *auth.Engine, cfg *confi
 	// Handle specific failure modes
 	if result.Error != nil {
 		switch {
+		case errors.Is(result.Error, auth.ErrAccountLocked):
+			logger.Warnf("Account lockout active for user %s: %v", username, result.Error)
+			pamError(pamh, "LinuxHello: Too many failed attempts. Use password.")
+			return fallbackOrError(cfg)
+
 		case errors.Is(result.Error, auth.ErrAuthenticationCancelled):
 			if ctx.Err() == context.DeadlineExceeded {
 				logger.Info("Face detection timed out")

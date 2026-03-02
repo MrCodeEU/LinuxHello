@@ -1,155 +1,172 @@
 #!/bin/bash
-# Build script for creating distribution packages
 
-set -e
+set -euo pipefail
 
-VERSION=${1:-1.7.0}
-ARCH=${2:-$(uname -m)}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SPEC_FILE="$ROOT_DIR/packaging/linuxhello.spec"
+
+VERSION="${1:-$(grep '^Version:' "$SPEC_FILE" | sed 's/Version:[[:space:]]*//')}"
+ARCH="${2:-$(uname -m)}"
 BUILD_DIR="/tmp/linuxhello-build"
-PACKAGE_DIR="$(pwd)/dist/packages"
+PACKAGE_DIR="$ROOT_DIR/dist/packages"
+
+map_deb_arch() {
+    case "$1" in
+        x86_64|amd64) echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        armv7l) echo "armhf" ;;
+        i686|i386) echo "i386" ;;
+        *) echo "$1" ;;
+    esac
+}
 
 echo "Building LinuxHello packages for version $VERSION on $ARCH"
 
-# Clean up
+cd "$ROOT_DIR"
 rm -rf "$BUILD_DIR" "$PACKAGE_DIR"
 mkdir -p "$BUILD_DIR" "$PACKAGE_DIR"
 
-# Create source tarball
-echo "Creating source tarball..."
-git archive --format=tar.gz --prefix="linuxhello-$VERSION/" HEAD > "$BUILD_DIR/linuxhello-$VERSION.tar.gz"
+if [ ! -x "$ROOT_DIR/bin/linuxhello" ] || [ ! -x "$ROOT_DIR/bin/pam_linuxhello.so" ]; then
+    echo "Missing build artifacts, running make build..."
+    make build
+fi
 
-# Build RPM
+echo "Creating source tarball..."
+tar \
+    --exclude=".git" \
+    --exclude="dist" \
+    --exclude="node_modules" \
+    --exclude="frontend/node_modules" \
+    --exclude="/tmp/linuxhello-build" \
+    -czf "$BUILD_DIR/linuxhello-$VERSION.tar.gz" \
+    --transform "s|^|linuxhello-$VERSION/|" \
+    .
+
 if command -v rpmbuild >/dev/null 2>&1; then
     echo "Building RPM package..."
-    
-    # Set up RPM build environment
+
     RPMBUILD_DIR="$BUILD_DIR/rpmbuild"
     mkdir -p "$RPMBUILD_DIR"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-    
-    # Copy source and spec
+
     cp "$BUILD_DIR/linuxhello-$VERSION.tar.gz" "$RPMBUILD_DIR/SOURCES/"
-    cp linuxhello.spec "$RPMBUILD_DIR/SPECS/"
-    
-    # Update version in spec file
-    sed -i "s/Version:.*/Version:        $VERSION/" "$RPMBUILD_DIR/SPECS/linuxhello.spec"
-    
-    # Build RPM
-    rpmbuild --define "_topdir $RPMBUILD_DIR" \
-             --define "_version $VERSION" \
-             -ba "$RPMBUILD_DIR/SPECS/linuxhello.spec"
-    
-    # Copy RPMs to package directory
+    cp "$SPEC_FILE" "$RPMBUILD_DIR/SPECS/linuxhello.spec"
+
+    sed -i "s/^Version:.*/Version:        $VERSION/" "$RPMBUILD_DIR/SPECS/linuxhello.spec"
+
+    rpmbuild --define "_topdir $RPMBUILD_DIR" -ba "$RPMBUILD_DIR/SPECS/linuxhello.spec"
+
     find "$RPMBUILD_DIR/RPMS" -name "*.rpm" -exec cp {} "$PACKAGE_DIR/" \;
     find "$RPMBUILD_DIR/SRPMS" -name "*.rpm" -exec cp {} "$PACKAGE_DIR/" \;
-    
-    echo "RPM packages created in $PACKAGE_DIR"
 else
     echo "rpmbuild not found, skipping RPM build"
 fi
 
-# Build DEB (basic, for broader compatibility)
 if command -v dpkg-deb >/dev/null 2>&1; then
     echo "Building DEB package..."
-    
+
+    DEB_ARCH="$(map_deb_arch "$ARCH")"
     DEB_DIR="$BUILD_DIR/linuxhello-deb"
     mkdir -p "$DEB_DIR/DEBIAN"
-    mkdir -p "$DEB_DIR/usr/bin"
-    mkdir -p "$DEB_DIR/usr/lib/security"
-    mkdir -p "$DEB_DIR/etc/systemd/system"
-    mkdir -p "$DEB_DIR/etc/linuxhello"
-    mkdir -p "$DEB_DIR/usr/share/linuxhello"
-    mkdir -p "$DEB_DIR/var/lib/linuxhello"
-    
-    # Create control file
+
+    make install DESTDIR="$DEB_DIR" PREFIX=/usr
+
     cat > "$DEB_DIR/DEBIAN/control" << EOF
 Package: linuxhello
 Version: $VERSION
 Section: admin
 Priority: optional
-Architecture: amd64
-Depends: pam-modules, libsqlite3-0, libv4l-0, python3, python3-pip, python3-venv
+Architecture: $DEB_ARCH
+Depends: libpam-modules, libsqlite3-0, python3, python3-venv, python3-pip, systemd
 Maintainer: MrCode <mrcode@example.com>
 Description: Face authentication system for Linux
- LinuxHello is a modern face authentication system that integrates with PAM
- to provide secure, contactless authentication using facial recognition.
+ LinuxHello integrates facial recognition with PAM for secure authentication.
 EOF
-    
-    # Install binaries (assumes they're already built)
-    if [ -f "bin/linuxhello" ]; then
-        cp bin/linuxhello "$DEB_DIR/usr/bin/"
-        cp bin/pam_linuxhello.so "$DEB_DIR/usr/lib/security/" 2>/dev/null || true
-        cp configs/linuxhello.conf "$DEB_DIR/etc/linuxhello/"
-        cp systemd/linuxhello-inference.service "$DEB_DIR/etc/systemd/system/"
-        cp scripts/linuxhello-pam "$DEB_DIR/usr/bin/"
-        cp -r python-service "$DEB_DIR/usr/share/linuxhello/"
-        # Note: frontend is embedded in linuxhello binary, no separate install needed
-        
-        # Build DEB
-        dpkg-deb --build "$DEB_DIR" "$PACKAGE_DIR/linuxhello_${VERSION}_amd64.deb"
-        echo "DEB package created: linuxhello_${VERSION}_amd64.deb"
-    else
-        echo "Binaries not found, skipping DEB build"
-    fi
-fi
 
-# Create generic tarball
-echo "Creating generic tarball..."
-TARBALL_DIR="$BUILD_DIR/linuxhello-generic"
-mkdir -p "$TARBALL_DIR"
-
-# Copy built files if they exist
-if [ -f "bin/linuxhello" ]; then
-    cp -r bin "$TARBALL_DIR/"
-    cp -r configs "$TARBALL_DIR/"
-    cp -r scripts "$TARBALL_DIR/"
-    cp -r systemd "$TARBALL_DIR/"
-    cp -r python-service "$TARBALL_DIR/"
-    # Note: frontend is embedded in linuxhello binary
-    cp README.md Makefile "$TARBALL_DIR/"
-    
-    # Create install script
-    cat > "$TARBALL_DIR/install.sh" << 'EOF'
+    cat > "$DEB_DIR/DEBIAN/postinst" << 'EOF'
 #!/bin/bash
-# LinuxHello installation script
+set -e
 
-echo "Installing LinuxHello..."
-
-# Check if running as root
-if [ "$(id -u)" != "0" ]; then
-   echo "This script must be run as root" 
-   exit 1
+if ! getent group linuxhello >/dev/null; then
+    groupadd --system linuxhello || true
+fi
+if ! getent passwd linuxhello >/dev/null; then
+    useradd --system --gid linuxhello --home /var/lib/linuxhello --shell /usr/sbin/nologin linuxhello || true
 fi
 
-# Install files
-install -d /usr/local/bin
-install -d /usr/local/lib/security
-install -d /etc/linuxhello
-install -d /opt/linuxhello
-install -d /var/lib/linuxhello
+mkdir -p /var/lib/linuxhello
+chown -R linuxhello:linuxhello /var/lib/linuxhello /usr/share/linuxhello/python-service
+chmod 750 /var/lib/linuxhello
 
-install -m 755 bin/linuxhello /usr/local/bin/
-install -m 755 bin/pam_linuxhello.so /usr/local/lib/security/ 2>/dev/null || true
-install -m 644 configs/linuxhello.conf /etc/linuxhello/
-cp -r python-service /opt/linuxhello/
-cp systemd/linuxhello-inference.service /etc/systemd/system/
+/usr/libexec/linuxhello/sync-python-venv.sh /usr/share/linuxhello/python-service || true
 
-# Set up Python environment
-cd /opt/linuxhello/python-service
-python3 -m venv venv
-./venv/bin/pip install --upgrade pip
-./venv/bin/pip install -r requirements.txt
+systemctl daemon-reload || true
+systemctl enable --now linuxhello-inference.service || true
+EOF
+
+    cat > "$DEB_DIR/DEBIAN/prerm" << 'EOF'
+#!/bin/bash
+set -e
+
+if [ "$1" = "remove" ]; then
+    systemctl disable --now linuxhello-inference.service || true
+fi
+EOF
+
+    chmod 755 "$DEB_DIR/DEBIAN/postinst" "$DEB_DIR/DEBIAN/prerm"
+
+    if dpkg-deb --help | grep -q -- '--root-owner-group'; then
+        dpkg-deb --root-owner-group --build "$DEB_DIR" "$PACKAGE_DIR/linuxhello_${VERSION}_${DEB_ARCH}.deb"
+    else
+        dpkg-deb --build "$DEB_DIR" "$PACKAGE_DIR/linuxhello_${VERSION}_${DEB_ARCH}.deb"
+    fi
+
+    echo "DEB package created: linuxhello_${VERSION}_${DEB_ARCH}.deb"
+else
+    echo "dpkg-deb not found, skipping DEB build"
+fi
+
+echo "Creating generic tarball..."
+TARBALL_ROOT="$BUILD_DIR/linuxhello-generic"
+TARBALL_STAGE="$TARBALL_ROOT/payload"
+mkdir -p "$TARBALL_STAGE"
+
+make install DESTDIR="$TARBALL_STAGE" PREFIX=/usr
+
+cat > "$TARBALL_ROOT/install.sh" << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This installer must be run as root" >&2
+    exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+rsync -a "$SCRIPT_DIR/payload/" /
+
+if ! getent group linuxhello >/dev/null; then
+    groupadd --system linuxhello || true
+fi
+if ! getent passwd linuxhello >/dev/null; then
+    useradd --system --gid linuxhello --home /var/lib/linuxhello --shell /usr/sbin/nologin linuxhello || true
+fi
+
+mkdir -p /var/lib/linuxhello
+chown -R linuxhello:linuxhello /var/lib/linuxhello /usr/share/linuxhello/python-service
+chmod 750 /var/lib/linuxhello
+
+/usr/libexec/linuxhello/sync-python-venv.sh /usr/share/linuxhello/python-service
 
 systemctl daemon-reload
-echo "Installation complete!"
-echo "Start inference: systemctl enable --now linuxhello-inference"
+systemctl enable --now linuxhello-inference.service
+
+echo "Installation complete"
 echo "Launch GUI: sudo linuxhello"
 EOF
-    chmod +x "$TARBALL_DIR/install.sh"
-    
-    # Create tarball
-    (cd "$BUILD_DIR" && tar -czf "$PACKAGE_DIR/linuxhello-${VERSION}-linux-${ARCH}.tar.gz" linuxhello-generic)
-    echo "Generic tarball created: linuxhello-${VERSION}-linux-${ARCH}.tar.gz"
-fi
 
-echo "Package build complete! Packages are in: $PACKAGE_DIR"
+chmod +x "$TARBALL_ROOT/install.sh"
+(cd "$BUILD_DIR" && tar -czf "$PACKAGE_DIR/linuxhello-${VERSION}-linux-${ARCH}.tar.gz" linuxhello-generic)
+
+echo "Package build complete. Artifacts in: $PACKAGE_DIR"
 ls -la "$PACKAGE_DIR"

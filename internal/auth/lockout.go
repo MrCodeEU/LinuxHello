@@ -8,6 +8,42 @@ import (
 
 // CheckLockout checks if a user is currently locked out
 func (e *Engine) CheckLockout(username string) error {
+	maxAttempts := e.config.Auth.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	lockoutDuration := time.Duration(e.config.Auth.LockoutDuration) * time.Second
+	if lockoutDuration <= 0 {
+		lockoutDuration = 5 * time.Minute
+	}
+
+	windowStart := time.Now().Add(-lockoutDuration)
+	if e.embeddingStore != nil {
+		lastSuccess, err := e.embeddingStore.GetLastSuccessTime(username)
+		if err != nil {
+			e.logger.Warnf("Failed to read last success for lockout check (%s): %v", username, err)
+		} else if lastSuccess != nil && lastSuccess.After(windowStart) {
+			windowStart = *lastSuccess
+		}
+
+		failureCount, err := e.embeddingStore.CountFailuresSince(username, windowStart)
+		if err != nil {
+			e.logger.Warnf("Failed to count auth failures for lockout check (%s): %v", username, err)
+		} else if failureCount >= maxAttempts {
+			lastFailure, failureErr := e.embeddingStore.GetLastFailureTimeSince(username, windowStart)
+			if failureErr != nil {
+				e.logger.Warnf("Failed to read last failure for lockout check (%s): %v", username, failureErr)
+			} else if lastFailure != nil {
+				lockedUntil := lastFailure.Add(lockoutDuration)
+				if time.Now().Before(lockedUntil) {
+					remainingTime := time.Until(lockedUntil)
+					return fmt.Errorf("%w: locked for %v", ErrAccountLocked, remainingTime.Round(time.Second))
+				}
+			}
+		}
+	}
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -19,7 +55,7 @@ func (e *Engine) CheckLockout(username string) error {
 	// Check if user is currently locked out
 	if time.Now().Before(tracker.LockedUntil) {
 		remainingTime := time.Until(tracker.LockedUntil)
-		return fmt.Errorf("account locked for %v due to failed attempts", remainingTime.Round(time.Second))
+		return fmt.Errorf("%w: locked for %v", ErrAccountLocked, remainingTime.Round(time.Second))
 	}
 
 	return nil

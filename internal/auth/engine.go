@@ -37,6 +37,9 @@ var ErrBiometricLockout = errors.New("biometric authentication locked out due to
 // Triggers fallback to password.
 var ErrMaxAttemptsExceeded = errors.New("maximum face authentication attempts exceeded")
 
+// ErrAccountLocked is returned when account lockout policy blocks biometric authentication.
+var ErrAccountLocked = errors.New("account temporarily locked due to failed attempts")
+
 // authRetryDelay is the delay between authentication retry attempts after post-detection failures
 // (challenge failures, identification failures). This prevents CPU spinning and excessive
 // inference service calls when a face is detected but authentication steps fail.
@@ -778,6 +781,11 @@ func (e *Engine) AuthenticateUser(ctx context.Context, username string, statusCh
 		// Face detected but doesn't match - log and continue trying
 		e.logger.Debugf("Face detected but doesn't match user %s (confidence: %.3f), continuing...",
 			username, bestScore)
+		_ = e.embeddingStore.RecordAuth(
+			user.ID, username, false, bestScore,
+			result.LivenessPassed, result.ChallengePassed, "face mismatch",
+		)
+		e.RecordFailure(username)
 		sendStatus(statusChan, StatusUpdate{Status: StatusNoMatch, Message: "We didn't recognize you"})
 
 		if maxAttempts > 0 && faceAuthAttempts >= maxAttempts {

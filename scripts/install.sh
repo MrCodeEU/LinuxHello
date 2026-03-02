@@ -21,6 +21,7 @@ LIBDIR="$PREFIX/lib"
 SYSCONFDIR="/etc"
 DATADIR="/usr/share"
 PAMDIR="$LIBDIR/security"
+LIBEXECDIR="/usr/libexec"
 
 # Detect distribution
 detect_distro() {
@@ -190,7 +191,10 @@ install_files() {
     mkdir -p "$BINDIR"
     mkdir -p "$PAMDIR"
     mkdir -p "$SYSCONFDIR/linuxhello"
+    mkdir -p "$SYSCONFDIR/systemd/system"
+    mkdir -p "$LIBEXECDIR/linuxhello"
     mkdir -p "$DATADIR/linuxhello/models"
+    mkdir -p "$DATADIR/linuxhello/python-service"
     mkdir -p "/var/lib/linuxhello"
     mkdir -p "/var/log"
     
@@ -199,6 +203,12 @@ install_files() {
     
     # Install PAM module
     install -m 755 "$PROJECT_ROOT/bin/pam_linuxhello.so" "$PAMDIR/"
+
+    # Install Python service and helper scripts
+    cp "$PROJECT_ROOT/python-service"/*.py "$DATADIR/linuxhello/python-service/"
+    cp "$PROJECT_ROOT/python-service/requirements.txt" "$DATADIR/linuxhello/python-service/"
+    install -m 755 "$PROJECT_ROOT/scripts/sync-python-venv.sh" "$LIBEXECDIR/linuxhello/"
+    install -m 644 "$PROJECT_ROOT/systemd/linuxhello-inference.service" "$SYSCONFDIR/systemd/system/"
     
     # Install configuration
     if [ ! -f "$SYSCONFDIR/linuxhello/linuxhello.conf" ]; then
@@ -218,6 +228,23 @@ install_files() {
     chmod 644 "/var/log/linuxhello.log"
     
     echo -e "${GREEN}Installation complete.${NC}"
+}
+
+setup_service_user() {
+    if ! getent group linuxhello >/dev/null; then
+        groupadd --system linuxhello || true
+    fi
+    if ! getent passwd linuxhello >/dev/null; then
+        useradd --system --gid linuxhello --home /var/lib/linuxhello --shell /usr/sbin/nologin linuxhello || true
+    fi
+
+    chown -R linuxhello:linuxhello /var/lib/linuxhello "$DATADIR/linuxhello/python-service"
+    chmod 750 /var/lib/linuxhello
+}
+
+sync_python_env() {
+    "$LIBEXECDIR/linuxhello/sync-python-venv.sh" "$DATADIR/linuxhello/python-service"
+    systemctl daemon-reload || true
 }
 
 # Setup user permissions
@@ -277,6 +304,9 @@ uninstall() {
     
     rm -f "$BINDIR/linuxhello"
     rm -f "$PAMDIR/pam_linuxhello.so"
+    rm -f "$LIBEXECDIR/linuxhello/sync-python-venv.sh"
+    rm -f "$SYSCONFDIR/systemd/system/linuxhello-inference.service"
+    systemctl daemon-reload 2>/dev/null || true
     
     echo -e "${YELLOW}Note: Configuration files and data were not removed.${NC}"
     echo "To remove all data, run:"
@@ -317,6 +347,8 @@ main() {
     download_models
     build_project
     install_files
+    setup_service_user
+    sync_python_env
     setup_permissions
     print_instructions
 }
